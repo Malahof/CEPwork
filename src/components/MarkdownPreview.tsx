@@ -2,9 +2,10 @@ import { useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
-import { Download, FileText } from 'lucide-react';
+import { Download, FileSpreadsheet, FileText } from 'lucide-react';
 import { exportToHtml } from '../utils/exportUtils';
 import { exportToDocx } from '../utils/docxExport';
+import { exportToXlsx } from '../utils/xlsxExport';
 
 interface MarkdownPreviewProps {
   content: string;
@@ -29,6 +30,10 @@ export function MarkdownPreview({ content, title }: MarkdownPreviewProps) {
     }
   }
 
+  function handleExportXlsx() {
+    exportToXlsx(title, content);
+  }
+
   return (
     <div className="preview-pane">
       <div className="preview-header">
@@ -45,6 +50,10 @@ export function MarkdownPreview({ content, title }: MarkdownPreviewProps) {
           >
             <FileText size={14} />
             <span>{docxLoading ? 'Экспорт...' : 'DOCX'}</span>
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={handleExportXlsx}>
+            <FileSpreadsheet size={14} />
+            <span>XLSX</span>
           </button>
         </div>
       </div>
