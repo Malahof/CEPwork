@@ -289,6 +289,158 @@
   overflow: hidden;
 }
 
+.eco-agent {
+  width: 340px;
+  min-width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-left: 1px solid #e8e8f0;
+  overflow: hidden;
+}
+
+.eco-agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid #e8e8f0;
+  background: linear-gradient(135deg, #f8f9ff, #ffffff);
+}
+
+.eco-agent-header h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  color: #1a1a2e;
+}
+
+.eco-agent-header svg {
+  color: #667eea;
+}
+
+.eco-agent-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #667eea;
+}
+
+.eco-agent-role {
+  display: flex;
+  gap: 8px;
+  margin: 12px;
+  padding: 10px;
+  border: 1px solid #e3e7ff;
+  border-radius: 10px;
+  background: #f8f9ff;
+  color: #4a4a68;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.eco-agent-role svg {
+  flex-shrink: 0;
+  color: #667eea;
+  margin-top: 1px;
+}
+
+.eco-agent-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 12px;
+  overflow-y: auto;
+}
+
+.eco-agent-message {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.eco-agent-message.agent {
+  background: #f1f4ff;
+  color: #24243e;
+  border-bottom-left-radius: 4px;
+}
+
+.eco-agent-message.user {
+  align-self: flex-end;
+  background: #667eea;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.eco-agent-draft {
+  display: grid;
+  gap: 8px;
+  margin: 0 12px 12px;
+  padding: 12px;
+  background: #f7fff9;
+  border: 1px solid #ccefd6;
+  border-radius: 12px;
+}
+
+.eco-agent-draft-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1d6b35;
+}
+
+.eco-agent-draft p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #4f6b55;
+}
+
+.eco-agent-input {
+  padding: 12px;
+  border-top: 1px solid #e8e8f0;
+  background: #fafbfe;
+}
+
+.eco-agent-input textarea {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  border: 1px solid #dfe2f0;
+  border-radius: 10px;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1a1a2e;
+  outline: none;
+}
+
+.eco-agent-input textarea:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+}
+
+.eco-agent-input textarea:disabled {
+  background: #f1f1f5;
+  color: #8888a0;
+}
+
+.eco-agent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.eco-agent-actions .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
 /* ===== Editor Toolbar ===== */
 .editor-toolbar {
   display: flex;
@@ -564,6 +716,14 @@
   .editor-pane {
     border-right: none;
     border-bottom: 1px solid #e8e8f0;
+  }
+
+  .eco-agent {
+    width: 100%;
+    min-width: 0;
+    max-height: 440px;
+    border-left: none;
+    border-top: 1px solid #e8e8f0;
   }
 }
 
