@@ -88,6 +88,14 @@ const initialFolder: DocFolder = {
   isExpanded: true,
 };
 
+const templatesFolder: DocFolder = {
+  id: 'templates',
+  title: 'Шаблоны',
+  parentId: null,
+  order: 2,
+  isExpanded: true,
+};
+
 const guidePages: DocPage[] = [
   {
     id: 'guide-markdown',
@@ -160,11 +168,91 @@ const guidePages: DocPage[] = [
   },
 ];
 
+const templatePages: DocPage[] = [
+  {
+    id: 'template-meeting-notes',
+    title: 'Протокол встречи',
+    content: `# Протокол встречи
+
+## Дата
+
+## Участники
+
+- Имя участника
+
+## Повестка
+
+1. Тема обсуждения
+
+## Решения
+
+- Принятое решение
+
+## Задачи
+
+- [ ] Описание задачи
+`,
+    parentId: 'templates',
+    order: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+  {
+    id: 'template-project-plan',
+    title: 'План проекта',
+    content: `# План проекта
+
+## Цель
+
+## Область работ
+
+## Этапы
+
+| Этап | Срок | Ответственный |
+|------|------|---------------|
+|      |      |               |
+
+## Риски
+
+- Описание риска
+
+## Следующие шаги
+
+- [ ] Следующий шаг
+`,
+    parentId: 'templates',
+    order: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  },
+];
+
+function mergePages(pages: DocPage[]): DocPage[] {
+  const existingIds = new Set(pages.map((page) => page.id));
+  const missingTemplates = templatePages.filter((page) => !existingIds.has(page.id));
+  return [...pages, ...missingTemplates];
+}
+
+function mergeFolders(folders: DocFolder[]): DocFolder[] {
+  const hasTemplatesFolder = folders.some((folder) => folder.id === templatesFolder.id);
+  return hasTemplatesFolder ? folders : [...folders, templatesFolder];
+}
+
+function isDocStateSnapshot(value: unknown): value is Pick<DocState, 'pages' | 'folders'> {
+  if (typeof value !== 'object' || value === null) return false;
+  return (
+    'pages' in value &&
+    Array.isArray(value.pages) &&
+    'folders' in value &&
+    Array.isArray(value.folders)
+  );
+}
+
 export const useDocStore = create<DocState>()(
   persist(
     (set, get) => ({
-      pages: [initialPage, ...guidePages],
-      folders: [initialFolder],
+      pages: [initialPage, ...guidePages, ...templatePages],
+      folders: [initialFolder, templatesFolder],
       activePageId: 'welcome',
       sidebarOpen: true,
       searchQuery: '',
@@ -273,6 +361,18 @@ export const useDocStore = create<DocState>()(
     }),
     {
       name: 'doc-builder-storage',
+      merge: (persistedState, currentState) => {
+        if (!isDocStateSnapshot(persistedState)) {
+          return currentState;
+        }
+
+        return {
+          ...currentState,
+          ...persistedState,
+          pages: mergePages(persistedState.pages),
+          folders: mergeFolders(persistedState.folders),
+        };
+      },
     }
   )
 );
