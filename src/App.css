@@ -352,14 +352,26 @@
   min-height: 44px;
 }
 
+.preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .preview-header .btn-secondary {
-  color: #666;
+  background: #f5f5f7;
+  color: #555;
   border-color: #ddd;
 }
 
 .preview-header .btn-secondary:hover {
-  background: #f5f5f5;
+  background: #ececf2;
   color: #333;
+}
+
+.preview-header .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .preview-label {
