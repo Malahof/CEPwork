@@ -16,6 +16,12 @@ export interface DocFolder {
   isExpanded: boolean;
 }
 
+export interface DocsSnapshot {
+  pages: DocPage[];
+  folders: DocFolder[];
+  activePageId: string | null;
+}
+
 export type TreeItem = DocPage | DocFolder;
 
 export function isDocPage(item: TreeItem): item is DocPage {

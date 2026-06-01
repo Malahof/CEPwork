@@ -5,8 +5,16 @@ import { MarkdownPreview } from './MarkdownPreview';
 import { PanelLeft, FileText } from 'lucide-react';
 
 export function EditorPage() {
-  const { pages, activePageId, updatePage, sidebarOpen, toggleSidebar } =
-    useDocStore();
+  const {
+    pages,
+    activePageId,
+    updatePage,
+    sidebarOpen,
+    toggleSidebar,
+    isLoading,
+    isSaving,
+    error,
+  } = useDocStore();
 
   const activePage = pages.find((p) => p.id === activePageId);
 
@@ -29,11 +37,22 @@ export function EditorPage() {
             <span className="editor-date">
               Обновлено: {new Date(activePage.updatedAt).toLocaleString('ru-RU')}
             </span>
+            {isSaving && <span className="editor-status">Сохранение...</span>}
           </div>
         )}
       </div>
 
-      {activePage ? (
+      {error && <div className="editor-error">{error}</div>}
+
+      {isLoading ? (
+        <div className="editor-empty">
+          <div className="empty-state">
+            <FileText size={64} strokeWidth={1} />
+            <h2>Загрузка документов</h2>
+            <p>Получаем данные с сервера...</p>
+          </div>
+        </div>
+      ) : activePage ? (
         <div className="editor-split">
           <MarkdownEditor
             value={activePage.content}

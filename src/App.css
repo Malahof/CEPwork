@@ -267,6 +267,19 @@
   margin-left: auto;
 }
 
+.editor-status {
+  font-size: 12px;
+  color: #667eea;
+}
+
+.editor-error {
+  padding: 8px 16px;
+  border-bottom: 1px solid #ffd4d4;
+  background: #fff5f5;
+  color: #c92a2a;
+  font-size: 13px;
+}
+
 /* ===== Editor Split ===== */
 .editor-split {
   flex: 1;
