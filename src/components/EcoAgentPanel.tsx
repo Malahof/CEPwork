@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Bot, FilePlus2, Send, Sparkles } from 'lucide-react';
+import { generateEcoDocument } from '../api/aiApi';
 
 type AgentStep = 'document' | 'sources' | 'draft' | 'corrections';
+type AgentMode = 'openai' | 'wizard';
 
 interface EcoAgentPanelProps {
   onApplyDraft: (content: string) => void;
@@ -85,6 +87,8 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
   const [documentRequest, setDocumentRequest] = useState('');
   const [sources, setSources] = useState('');
   const [draft, setDraft] = useState('');
+  const [agentMode, setAgentMode] = useState<AgentMode>('openai');
+  const [isAiLoading, setIsAiLoading] = useState(false);
 
   const placeholder = useMemo(() => {
     switch (step) {
@@ -106,9 +110,9 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
     ]);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const value = input.trim();
-    if (!value || step === 'draft') return;
+    if (!value || step === 'draft' || isAiLoading) return;
 
     addMessage('user', value);
     setInput('');
@@ -124,24 +128,68 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
     }
 
     if (step === 'sources') {
-      const generatedDraft = buildDraft(documentRequest, value);
       setSources(value);
+      if (agentMode === 'openai') {
+        setIsAiLoading(true);
+        try {
+          const result = await generateEcoDocument({ documentRequest, sources: value });
+          setDraft(result.draft);
+          setStep('draft');
+          addMessage(
+            'agent',
+            `OpenAI разработал проект документа «${documentRequest}». Проверьте структуру, внесите проект в редактор или запросите корректировки.`
+          );
+        } catch (error) {
+          addMessage(
+            'agent',
+            `${error instanceof Error ? error.message : 'Не удалось получить ответ OpenAI'}. Можно переключиться на режим Wizard и продолжить без API.`
+          );
+        } finally {
+          setIsAiLoading(false);
+        }
+        return;
+      }
+
+      const generatedDraft = buildDraft(documentRequest, value);
       setDraft(generatedDraft);
       setStep('draft');
       addMessage(
         'agent',
-        `Разработал проект документа «${documentRequest}». Проверьте структуру, внесите проект в редактор или запросите корректировки.`
+        `Wizard разработал проект документа «${documentRequest}». Проверьте структуру, внесите проект в редактор или запросите корректировки.`
       );
+      return;
+    }
+
+    if (agentMode === 'openai') {
+      setIsAiLoading(true);
+      try {
+        const result = await generateEcoDocument({
+          documentRequest,
+          sources,
+          draft,
+          corrections: value,
+        });
+        setDraft(result.draft);
+        setStep('draft');
+        addMessage(
+          'agent',
+          'OpenAI внес корректировки. Обновленную редакцию можно перенести в текущий документ.'
+        );
+      } catch (error) {
+        addMessage(
+          'agent',
+          `${error instanceof Error ? error.message : 'Не удалось получить ответ OpenAI'}. Можно переключиться на режим Wizard и повторить корректировки.`
+        );
+      } finally {
+        setIsAiLoading(false);
+      }
       return;
     }
 
     const correctedDraft = applyCorrections(draft, value);
     setDraft(correctedDraft);
     setStep('draft');
-    addMessage(
-      'agent',
-      'Корректировки внесены. Обновленную редакцию можно перенести в текущий документ.'
-    );
+    addMessage('agent', 'Wizard внес корректировки. Обновленную редакцию можно перенести в текущий документ.');
   }
 
   function requestCorrections() {
@@ -159,6 +207,7 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
     setDocumentRequest('');
     setSources('');
     setDraft('');
+    setIsAiLoading(false);
   }
 
   return (
@@ -174,8 +223,25 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
       <div className="eco-agent-role">
         <Sparkles size={16} />
         <span>
-          Роль: разработчик экологической документации. Общение ведется на русском языке.
+          Роль: разработчик экологической документации. OpenAI использует OPENAI_API_KEY на сервере; Wizard работает локально.
         </span>
+      </div>
+
+      <div className="eco-agent-mode">
+        <button
+          className={agentMode === 'openai' ? 'active' : ''}
+          type="button"
+          onClick={() => setAgentMode('openai')}
+        >
+          OpenAI
+        </button>
+        <button
+          className={agentMode === 'wizard' ? 'active' : ''}
+          type="button"
+          onClick={() => setAgentMode('wizard')}
+        >
+          Wizard
+        </button>
       </div>
 
       <div className="eco-agent-messages">
@@ -208,12 +274,12 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
       <div className="eco-agent-input">
         <textarea
           value={input}
-          placeholder={placeholder}
-          disabled={step === 'draft'}
+          placeholder={isAiLoading ? 'OpenAI готовит ответ...' : placeholder}
+          disabled={step === 'draft' || isAiLoading}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-              handleSubmit();
+              void handleSubmit();
             }
           }}
         />
@@ -223,11 +289,11 @@ export function EcoAgentPanel({ onApplyDraft }: EcoAgentPanelProps) {
           </button>
           <button
             className="btn btn-primary btn-sm"
-            disabled={!input.trim() || step === 'draft'}
-            onClick={handleSubmit}
+            disabled={!input.trim() || step === 'draft' || isAiLoading}
+            onClick={() => void handleSubmit()}
           >
             <Send size={14} />
-            <span>Отправить</span>
+            <span>{isAiLoading ? 'Генерация...' : 'Отправить'}</span>
           </button>
         </div>
       </div>

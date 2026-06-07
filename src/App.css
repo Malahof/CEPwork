@@ -359,6 +359,31 @@
   margin-top: 1px;
 }
 
+.eco-agent-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
+.eco-agent-mode button {
+  border: 1px solid #dfe2f0;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  color: #666680;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.eco-agent-mode button.active {
+  border-color: #667eea;
+  background: #f1f4ff;
+  color: #4d5edb;
+}
+
 .eco-agent-messages {
   flex: 1;
   display: flex;

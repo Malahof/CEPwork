@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '..', 'data');
 const docsPath = path.join(dataDir, 'docs.json');
 const port = Number(process.env.PORT ?? 3001);
+const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
 const app = express();
 
@@ -122,6 +123,80 @@ function requireBoolean(value, field) {
   throw new Error(`Invalid ${field}`);
 }
 
+function optionalString(value, field) {
+  if (value === undefined) return '';
+  return requireString(value, field);
+}
+
+async function generateEcoDocumentWithOpenAi(payload) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    const error = new Error('OPENAI_API_KEY не настроен на сервере');
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const isCorrection = Boolean(payload.corrections);
+  const userPrompt = isCorrection
+    ? `Доработай проект экологической документации.
+
+Документ: ${payload.documentRequest}
+
+Источники:
+${payload.sources}
+
+Текущий проект:
+${payload.draft}
+
+Корректировки:
+${payload.corrections}`
+    : `Разработай проект экологической документации.
+
+Документ: ${payload.documentRequest}
+
+Источники информации:
+${payload.sources}`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: openAiModel,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Ты русскоязычный разработчик экологической документации. ' +
+            'Пиши структурированный Markdown, уточняй недостающие исходные данные, ' +
+            'не выдумывай числовые показатели и нормативные реквизиты без источников.',
+        },
+        {
+          role: 'user',
+          content: userPrompt,
+        },
+      ],
+    }),
+  });
+
+  const body = await response.json();
+  if (!response.ok) {
+    const error = new Error(body?.error?.message ?? 'OpenAI API вернул ошибку');
+    error.statusCode = response.status;
+    throw error;
+  }
+
+  const draft = body?.choices?.[0]?.message?.content;
+  if (typeof draft !== 'string' || !draft.trim()) {
+    throw new Error('OpenAI API вернул пустой ответ');
+  }
+
+  return draft.trim();
+}
+
 app.get('/api/docs', async (_req, res, next) => {
   try {
     res.json(await readDocs());
@@ -137,6 +212,38 @@ app.post('/api/docs', async (req, res, next) => {
     res.json(snapshot);
   } catch (error) {
     res.status(400);
+    next(error);
+  }
+});
+
+app.post('/api/ai/eco-agent', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Invalid AI request');
+
+    const documentRequest = requireString(body.documentRequest, 'documentRequest').trim();
+    const sources = requireString(body.sources, 'sources').trim();
+    const draft = optionalString(body.draft, 'draft').trim();
+    const corrections = optionalString(body.corrections, 'corrections').trim();
+
+    if (!documentRequest || !sources) {
+      throw new Error('documentRequest and sources are required');
+    }
+
+    if (corrections && !draft) {
+      throw new Error('draft is required for corrections');
+    }
+
+    res.json({
+      draft: await generateEcoDocumentWithOpenAi({
+        documentRequest,
+        sources,
+        draft,
+        corrections,
+      }),
+    });
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
     next(error);
   }
 });
