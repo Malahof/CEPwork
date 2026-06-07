@@ -9,6 +9,7 @@
     "server": "node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "node --test server/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

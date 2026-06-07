@@ -5,12 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, '..', 'data');
-const docsPath = path.join(dataDir, 'docs.json');
+const docsPath = process.env.DOCS_DATA_PATH
+  ? path.resolve(process.env.DOCS_DATA_PATH)
+  : path.resolve(__dirname, '..', 'data', 'docs.json');
+const dataDir = path.dirname(docsPath);
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
-const app = express();
+export const app = express();
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -256,6 +258,8 @@ app.use((error, _req, res, next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Docs API listening on http://localhost:${port}`);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  app.listen(port, () => {
+    console.log(`Docs API listening on http://localhost:${port}`);
+  });
+}
