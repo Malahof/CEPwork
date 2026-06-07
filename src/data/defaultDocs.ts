@@ -60,6 +60,14 @@ const initialFolder: DocFolder = {
   isExpanded: true,
 };
 
+const templatesFolder: DocFolder = {
+  id: 'templates',
+  title: 'Шаблоны',
+  parentId: null,
+  order: 2,
+  isExpanded: true,
+};
+
 const guidePages: DocPage[] = [
   {
     id: 'guide-markdown',
@@ -140,8 +148,130 @@ const guidePages: DocPage[] = [
   },
 ];
 
+const templatePages: DocPage[] = [
+  {
+    id: 'template-meeting-notes',
+    title: 'Протокол встречи',
+    content: `# Протокол встречи: {{meetingTopic}}
+
+**Дата:** {{meetingDate}}
+
+## Участники
+
+{{participants}}
+
+## Повестка
+
+1. {{agenda}}
+
+## Решения
+
+- {{decisions}}
+
+## Задачи
+
+- [ ] {{tasks}}
+`,
+    parentId: 'templates',
+    order: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    isTemplate: true,
+    templateVariables: [
+      { key: 'meetingTopic', label: 'Тема встречи', placeholder: 'Например: согласование ПНООЛР' },
+      { key: 'meetingDate', label: 'Дата', placeholder: 'Например: 15.06.2026' },
+      { key: 'participants', label: 'Участники', placeholder: 'Список участников' },
+      { key: 'agenda', label: 'Повестка', placeholder: 'Основной вопрос обсуждения' },
+      { key: 'decisions', label: 'Решения', placeholder: 'Принятые решения' },
+      { key: 'tasks', label: 'Задачи', placeholder: 'Следующее действие' },
+    ],
+  },
+  {
+    id: 'template-project-plan',
+    title: 'План проекта',
+    content: `# План проекта: {{projectName}}
+
+## Цель
+
+{{goal}}
+
+## Область работ
+
+{{scope}}
+
+## Этапы
+
+| Этап | Срок | Ответственный |
+|------|------|---------------|
+| {{stage}} | {{deadline}} | {{owner}} |
+
+## Риски
+
+- {{risks}}
+
+## Следующие шаги
+
+- [ ] {{nextSteps}}
+`,
+    parentId: 'templates',
+    order: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    isTemplate: true,
+    templateVariables: [
+      { key: 'projectName', label: 'Название проекта', placeholder: 'Например: инвентаризация источников выбросов' },
+      { key: 'goal', label: 'Цель', placeholder: 'Что нужно получить в результате' },
+      { key: 'scope', label: 'Область работ', placeholder: 'Перечень работ и границы проекта' },
+      { key: 'stage', label: 'Первый этап', placeholder: 'Например: сбор исходных данных' },
+      { key: 'deadline', label: 'Срок', placeholder: 'Например: 30.06.2026' },
+      { key: 'owner', label: 'Ответственный', placeholder: 'ФИО или роль' },
+      { key: 'risks', label: 'Риски', placeholder: 'Основной риск проекта' },
+      { key: 'nextSteps', label: 'Следующий шаг', placeholder: 'Первое действие после создания плана' },
+    ],
+  },
+  {
+    id: 'template-eco-document',
+    title: 'Экологический документ',
+    content: `# {{documentTitle}}
+
+## 1. Основание для разработки
+
+{{basis}}
+
+## 2. Исходные данные
+
+{{sources}}
+
+## 3. Описание объекта
+
+{{objectDescription}}
+
+## 4. Экологические аспекты
+
+{{ecoAspects}}
+
+## 5. Мероприятия и контроль
+
+{{measures}}
+`,
+    parentId: 'templates',
+    order: 2,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    isTemplate: true,
+    templateVariables: [
+      { key: 'documentTitle', label: 'Название документа', placeholder: 'Например: Паспорт отходов для склада' },
+      { key: 'basis', label: 'Основание', placeholder: 'НПА, договор, внутреннее распоряжение' },
+      { key: 'sources', label: 'Источники информации', placeholder: 'Исходные данные, файлы, результаты обследования' },
+      { key: 'objectDescription', label: 'Описание объекта', placeholder: 'Площадка, процесс, оборудование' },
+      { key: 'ecoAspects', label: 'Экологические аспекты', placeholder: 'Отходы, выбросы, сбросы, риски' },
+      { key: 'measures', label: 'Мероприятия и контроль', placeholder: 'Что нужно выполнить и как контролировать' },
+    ],
+  },
+];
+
 export const defaultDocsSnapshot: DocsSnapshot = {
-  pages: [initialPage, ...guidePages],
-  folders: [initialFolder],
+  pages: [initialPage, ...guidePages, ...templatePages],
+  folders: [initialFolder, templatesFolder],
   activePageId: 'welcome',
 };

@@ -60,7 +60,30 @@ function normalizePage(value) {
     order: requireNumber(value.order, 'page.order'),
     createdAt: requireNumber(value.createdAt, 'page.createdAt'),
     updatedAt: requireNumber(value.updatedAt, 'page.updatedAt'),
+    ...(value.isTemplate === undefined ? {} : { isTemplate: requireBoolean(value.isTemplate, 'page.isTemplate') }),
+    ...(value.templateVariables === undefined
+      ? {}
+      : { templateVariables: requireTemplateVariables(value.templateVariables) }),
   };
+}
+
+function requireTemplateVariables(value) {
+  if (!Array.isArray(value)) throw new Error('Invalid page.templateVariables');
+
+  return value.map((variable) => {
+    if (!isRecord(variable)) throw new Error('Invalid page.templateVariables item');
+
+    return {
+      key: requireString(variable.key, 'templateVariable.key'),
+      label: requireString(variable.label, 'templateVariable.label'),
+      ...(variable.placeholder === undefined
+        ? {}
+        : { placeholder: requireString(variable.placeholder, 'templateVariable.placeholder') }),
+      ...(variable.defaultValue === undefined
+        ? {}
+        : { defaultValue: requireString(variable.defaultValue, 'templateVariable.defaultValue') }),
+    };
+  });
 }
 
 function normalizeFolder(value) {

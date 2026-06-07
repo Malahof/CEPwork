@@ -1,3 +1,10 @@
+export interface TemplateVariable {
+  key: string;
+  label: string;
+  placeholder?: string;
+  defaultValue?: string;
+}
+
 export interface DocPage {
   id: string;
   title: string;
@@ -6,6 +13,8 @@ export interface DocPage {
   order: number;
   createdAt: number;
   updatedAt: number;
+  isTemplate?: boolean;
+  templateVariables?: TemplateVariable[];
 }
 
 export interface DocFolder {

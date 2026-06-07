@@ -16,6 +16,7 @@ interface DocState {
   loadDocs: () => Promise<void>;
   saveCurrentDocs: () => Promise<void>;
   addPage: (title: string, parentId: string | null) => DocPage;
+  createPageFromTemplate: (templateId: string, values: Record<string, string>) => DocPage | null;
   updatePage: (id: string, updates: Partial<Pick<DocPage, 'title' | 'content'>>) => void;
   deletePage: (id: string) => void;
   setActivePage: (id: string | null) => void;
@@ -44,11 +45,49 @@ function docsSnapshotFromState(state: DocState): DocsSnapshot {
   };
 }
 
+function snapshotWithDefaultTemplates(snapshot: DocsSnapshot): DocsSnapshot {
+  const defaultTemplates = defaultDocsSnapshot.pages.filter((page) => page.isTemplate);
+  const templateIds = new Set(defaultTemplates.map((page) => page.id));
+  const defaultTemplateById = new Map(defaultTemplates.map((page) => [page.id, page]));
+  const pages = snapshot.pages.map((page) => {
+    const defaultTemplate = defaultTemplateById.get(page.id);
+    if (!defaultTemplate) return page;
+
+    return {
+      ...defaultTemplate,
+      title: page.title,
+      parentId: page.parentId,
+      order: page.order,
+      createdAt: page.createdAt,
+      updatedAt: page.updatedAt,
+    };
+  });
+  const existingPageIds = new Set(pages.map((page) => page.id));
+  const missingTemplates = defaultTemplates.filter((page) => !existingPageIds.has(page.id));
+  const templateFolder = defaultDocsSnapshot.folders.find((folder) => folder.id === 'templates');
+  const hasTemplateFolder = snapshot.folders.some((folder) => folder.id === 'templates');
+
+  return {
+    pages: [...pages, ...missingTemplates],
+    folders: hasTemplateFolder || !templateFolder ? snapshot.folders : [...snapshot.folders, templateFolder],
+    activePageId: templateIds.has(snapshot.activePageId ?? '') ? snapshot.activePageId : snapshot.activePageId,
+  };
+}
+
+function renderTemplate(content: string, values: Record<string, string>): string {
+  return content.replace(/{{\s*([\w-]+)\s*}}/g, (_match, key: string) => values[key]?.trim() ?? '');
+}
+
+function titleFromContent(content: string, fallback: string): string {
+  const heading = content.match(/^#(?!#)\s+(.+)$/m);
+  return heading?.[1]?.trim() || fallback;
+}
+
 export const useDocStore = create<DocState>()((set, get) => {
   async function saveSnapshot(snapshot: DocsSnapshot) {
     set({ isSaving: true, error: null });
     try {
-      const saved = await saveDocs(snapshot);
+      const saved = snapshotWithDefaultTemplates(await saveDocs(snapshot));
       set({
         pages: saved.pages,
         folders: saved.folders,
@@ -87,7 +126,7 @@ export const useDocStore = create<DocState>()((set, get) => {
     loadDocs: async () => {
       set({ isLoading: true, error: null });
       try {
-        const snapshot = await fetchDocs();
+        const snapshot = snapshotWithDefaultTemplates(await fetchDocs());
         set({
           pages: snapshot.pages,
           folders: snapshot.folders,
@@ -113,6 +152,30 @@ export const useDocStore = create<DocState>()((set, get) => {
         id: generateId(),
         title,
         content: `# ${title}\n\nНачните писать здесь...`,
+        parentId,
+        order: siblings.length,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      updateDocs((state) => ({
+        pages: [...state.pages, newPage],
+        folders: state.folders,
+        activePageId: newPage.id,
+      }));
+      return newPage;
+    },
+
+    createPageFromTemplate: (templateId, values) => {
+      const template = get().pages.find((page) => page.id === templateId && page.isTemplate);
+      if (!template) return null;
+
+      const content = renderTemplate(template.content, values);
+      const parentId = null;
+      const siblings = get().pages.filter((page) => page.parentId === parentId && !page.isTemplate);
+      const newPage: DocPage = {
+        id: generateId(),
+        title: titleFromContent(content, template.title),
+        content,
         parentId,
         order: siblings.length,
         createdAt: Date.now(),

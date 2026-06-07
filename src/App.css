@@ -454,6 +454,105 @@
   transform: none;
 }
 
+/* ===== Template Dialog ===== */
+.template-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(26, 26, 46, 0.42);
+}
+
+.template-dialog {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(26, 26, 46, 0.28);
+  overflow: hidden;
+}
+
+.template-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-bottom: 1px solid #e8e8f0;
+  background: linear-gradient(135deg, #f8f9ff, #ffffff);
+}
+
+.template-dialog-header h2 {
+  margin: 2px 0 4px;
+  color: #1a1a2e;
+  font-size: 20px;
+}
+
+.template-dialog-header p {
+  margin: 0;
+  color: #666680;
+  font-size: 13px;
+}
+
+.template-dialog-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #667eea;
+}
+
+.template-dialog-form {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.template-field {
+  display: grid;
+  gap: 6px;
+  color: #24243e;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.template-field textarea {
+  min-height: 70px;
+  resize: vertical;
+  border: 1px solid #dfe2f0;
+  border-radius: 10px;
+  padding: 10px;
+  color: #1a1a2e;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.template-field textarea:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+}
+
+.template-empty {
+  margin: 0;
+  color: #666680;
+  font-size: 13px;
+}
+
+.template-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 6px;
+}
+
 /* ===== Editor Toolbar ===== */
 .editor-toolbar {
   display: flex;
