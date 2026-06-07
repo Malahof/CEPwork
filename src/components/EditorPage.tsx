@@ -7,6 +7,7 @@ import { PanelLeft, FileText } from 'lucide-react';
 export function EditorPage() {
   const {
     pages,
+    folders,
     activePageId,
     updatePage,
     sidebarOpen,
@@ -61,6 +62,8 @@ export function EditorPage() {
           <MarkdownPreview
             content={activePage.content}
             title={activePage.title}
+            pages={pages}
+            folders={folders}
           />
           <EcoAgentPanel
             onApplyDraft={(content) => updatePage(activePage.id, { content })}
