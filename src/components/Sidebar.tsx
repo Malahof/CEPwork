@@ -57,11 +57,12 @@ export function Sidebar() {
   }
 
   function commitEdit(type: 'page' | 'folder') {
-    if (!editingId || !editingTitle.trim()) return;
+    const title = normalizeEditableTitle(editingTitle);
+    if (!editingId || !title) return;
     if (type === 'page') {
-      updatePage(editingId, { title: editingTitle.trim() });
+      updatePage(editingId, { title });
     } else {
-      updateFolder(editingId, { title: editingTitle.trim() });
+      updateFolder(editingId, { title });
     }
     setEditingId(null);
     setEditingTitle('');
@@ -100,6 +101,11 @@ export function Sidebar() {
           {isEditing ? (
             <input
               className="inline-edit"
+              type="text"
+              inputMode="text"
+              autoComplete="off"
+              dir="auto"
+              spellCheck={false}
               value={editingTitle}
               onChange={(e) => setEditingTitle(e.target.value)}
               onKeyDown={(e) => {
@@ -186,6 +192,11 @@ export function Sidebar() {
         {isEditing ? (
           <input
             className="inline-edit"
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            dir="auto"
+            spellCheck={false}
             value={editingTitle}
             onChange={(e) => setEditingTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -300,4 +311,14 @@ export function Sidebar() {
       </nav>
     </aside>
   );
+}
+
+function normalizeEditableTitle(title: string) {
+  return [...title.normalize('NFC')]
+    .filter((char) => {
+      const code = char.codePointAt(0);
+      return code !== undefined && (code > 31 || code === 9) && code !== 127;
+    })
+    .join('')
+    .trim();
 }

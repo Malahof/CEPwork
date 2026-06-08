@@ -1,4 +1,10 @@
+import DOMPurify from 'dompurify';
+
 export function exportToHtml(title: string, htmlContent: string): void {
+  const safeHtmlContent = DOMPurify.sanitize(htmlContent, {
+    USE_PROFILES: { html: true },
+  });
+
   const fullHtml = `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -60,7 +66,7 @@ export function exportToHtml(title: string, htmlContent: string): void {
   </style>
 </head>
 <body>
-  ${htmlContent}
+  ${safeHtmlContent}
 </body>
 </html>`;
 

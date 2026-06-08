@@ -1,3 +1,10 @@
+export interface TemplateVariable {
+  key: string;
+  label: string;
+  placeholder?: string;
+  defaultValue?: string;
+}
+
 export interface DocPage {
   id: string;
   title: string;
@@ -6,6 +13,8 @@ export interface DocPage {
   order: number;
   createdAt: number;
   updatedAt: number;
+  isTemplate?: boolean;
+  templateVariables?: TemplateVariable[];
 }
 
 export interface DocFolder {
@@ -14,6 +23,12 @@ export interface DocFolder {
   parentId: string | null;
   order: number;
   isExpanded: boolean;
+}
+
+export interface DocsSnapshot {
+  pages: DocPage[];
+  folders: DocFolder[];
+  activePageId: string | null;
 }
 
 export type TreeItem = DocPage | DocFolder;

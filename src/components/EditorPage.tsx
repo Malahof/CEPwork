@@ -1,13 +1,35 @@
+import { useState } from 'react';
 import { useDocStore } from '../store/useDocStore';
+import { EcoAgentPanel } from './EcoAgentPanel';
 import { MarkdownEditor } from './MarkdownEditor';
 import { MarkdownPreview } from './MarkdownPreview';
-import { PanelLeft, FileText } from 'lucide-react';
+import { TemplateCreateDialog } from './TemplateCreateDialog';
+import { PanelLeft, FileText, FilePlus } from 'lucide-react';
 
 export function EditorPage() {
-  const { pages, activePageId, updatePage, sidebarOpen, toggleSidebar } =
-    useDocStore();
+  const {
+    pages,
+    folders,
+    activePageId,
+    updatePage,
+    createPageFromTemplate,
+    sidebarOpen,
+    toggleSidebar,
+    isLoading,
+    isSaving,
+    error,
+  } = useDocStore();
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
 
   const activePage = pages.find((p) => p.id === activePageId);
+
+  function handleCreateFromTemplate(values: Record<string, string>) {
+    if (!activePage) return;
+    const page = createPageFromTemplate(activePage.id, values);
+    if (page) {
+      setTemplateDialogOpen(false);
+    }
+  }
 
   return (
     <main className="editor-main">
@@ -28,11 +50,32 @@ export function EditorPage() {
             <span className="editor-date">
               Обновлено: {new Date(activePage.updatedAt).toLocaleString('ru-RU')}
             </span>
+            {isSaving && <span className="editor-status">Сохранение...</span>}
+            {activePage.isTemplate && (
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                onClick={() => setTemplateDialogOpen(true)}
+              >
+                <FilePlus size={14} />
+                <span>Создать из шаблона</span>
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {activePage ? (
+      {error && <div className="editor-error">{error}</div>}
+
+      {isLoading ? (
+        <div className="editor-empty">
+          <div className="empty-state">
+            <FileText size={64} strokeWidth={1} />
+            <h2>Загрузка документов</h2>
+            <p>Получаем данные с сервера...</p>
+          </div>
+        </div>
+      ) : activePage ? (
         <div className="editor-split">
           <MarkdownEditor
             value={activePage.content}
@@ -41,7 +84,19 @@ export function EditorPage() {
           <MarkdownPreview
             content={activePage.content}
             title={activePage.title}
+            pages={pages}
+            folders={folders}
           />
+          <EcoAgentPanel
+            onApplyDraft={(content) => updatePage(activePage.id, { content })}
+          />
+          {templateDialogOpen && activePage.isTemplate && (
+            <TemplateCreateDialog
+              template={activePage}
+              onClose={() => setTemplateDialogOpen(false)}
+              onCreate={handleCreateFromTemplate}
+            />
+          )}
         </div>
       ) : (
         <div className="editor-empty">
