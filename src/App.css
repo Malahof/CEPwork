@@ -578,6 +578,119 @@
   padding-top: 6px;
 }
 
+/* ===== Version History Dialog ===== */
+.history-dialog {
+  width: min(860px, 100%);
+}
+
+.history-dialog-body {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 360px;
+  overflow: hidden;
+}
+
+.history-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  overflow-y: auto;
+  border-right: 1px solid #e8e8f0;
+  background: #f8f9fc;
+}
+
+.history-version-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #e1e4f2;
+  border-radius: 10px;
+  background: #fff;
+  color: #24243e;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-version-item.active {
+  border-color: #667eea;
+  background: #f1f4ff;
+}
+
+.history-version-item svg {
+  flex-shrink: 0;
+  color: #667eea;
+}
+
+.history-version-item span {
+  display: grid;
+  gap: 3px;
+}
+
+.history-version-item small {
+  color: #666680;
+}
+
+.history-version-details {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.history-warning {
+  padding: 12px;
+  border: 1px solid #f5c76a;
+  border-radius: 10px;
+  background: #fff8e1;
+  color: #6b4b00;
+  font-size: 13px;
+}
+
+.history-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.history-summary-grid > div {
+  padding: 14px;
+  border: 1px solid #e8e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.history-summary-grid h3 {
+  margin: 0 0 8px;
+  color: #1a1a2e;
+  font-size: 14px;
+}
+
+.history-summary-grid p {
+  margin: 0;
+  color: #55556a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-version-id {
+  margin: 0;
+  color: #666680;
+  font-size: 12px;
+}
+
+.history-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid #e8e8f0;
+  background: #fff;
+}
+
 /* ===== Editor Toolbar ===== */
 .editor-toolbar {
   display: flex;

@@ -31,6 +31,12 @@ export interface DocsSnapshot {
   activePageId: string | null;
 }
 
+export interface DocsVersion {
+  versionId: string;
+  timestamp: number;
+  fileSize: number;
+}
+
 export type TreeItem = DocPage | DocFolder;
 
 export function isDocPage(item: TreeItem): item is DocPage {
