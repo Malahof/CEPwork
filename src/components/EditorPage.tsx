@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useDocStore } from '../store/useDocStore';
-import { EcoAgentPanel } from './EcoAgentPanel';
+import { ChatWizard } from './ChatWizard';
 import { MarkdownEditor } from './MarkdownEditor';
 import { MarkdownPreview } from './MarkdownPreview';
 import { TemplateCreateDialog } from './TemplateCreateDialog';
@@ -87,9 +87,7 @@ export function EditorPage() {
             pages={pages}
             folders={folders}
           />
-          <EcoAgentPanel
-            onApplyDraft={(content) => updatePage(activePage.id, { content })}
-          />
+          <ChatWizard />
           {templateDialogOpen && activePage.isTemplate && (
             <TemplateCreateDialog
               template={activePage}
