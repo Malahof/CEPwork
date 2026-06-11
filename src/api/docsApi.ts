@@ -1,4 +1,4 @@
-import type { DocsSnapshot } from '../types';
+import type { DocsSnapshot, DocsVersion } from '../types';
 
 const DOCS_ENDPOINT = '/api/docs';
 
@@ -21,6 +21,34 @@ export async function saveDocs(snapshot: DocsSnapshot): Promise<DocsSnapshot> {
 
   if (!response.ok) {
     throw new Error('Не удалось сохранить документы на сервере');
+  }
+
+  return response.json() as Promise<DocsSnapshot>;
+}
+
+export async function fetchDocsVersions(): Promise<DocsVersion[]> {
+  const response = await fetch(`${DOCS_ENDPOINT}/versions`);
+  if (!response.ok) {
+    throw new Error('Не удалось загрузить историю версий');
+  }
+  return response.json() as Promise<DocsVersion[]>;
+}
+
+export async function fetchDocsVersion(versionId: string): Promise<DocsSnapshot> {
+  const response = await fetch(`${DOCS_ENDPOINT}/versions/${encodeURIComponent(versionId)}`);
+  if (!response.ok) {
+    throw new Error('Не удалось загрузить выбранную версию');
+  }
+  return response.json() as Promise<DocsSnapshot>;
+}
+
+export async function restoreDocsVersion(versionId: string): Promise<DocsSnapshot> {
+  const response = await fetch(`${DOCS_ENDPOINT}/restore/${encodeURIComponent(versionId)}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    throw new Error('Не удалось восстановить выбранную версию');
   }
 
   return response.json() as Promise<DocsSnapshot>;

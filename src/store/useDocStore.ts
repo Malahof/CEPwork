@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { fetchDocs, saveDocs } from '../api/docsApi';
+import { fetchDocs, restoreDocsVersion, saveDocs } from '../api/docsApi';
 import { defaultDocsSnapshot } from '../data/defaultDocs';
 import type { DocsSnapshot, DocPage, DocFolder } from '../types';
 
@@ -15,6 +15,7 @@ interface DocState {
 
   loadDocs: () => Promise<void>;
   saveCurrentDocs: () => Promise<void>;
+  restoreVersion: (versionId: string) => Promise<void>;
   addPage: (title: string, parentId: string | null) => DocPage;
   createPageFromTemplate: (templateId: string, values: Record<string, string>) => DocPage | null;
   updatePage: (id: string, updates: Partial<Pick<DocPage, 'title' | 'content'>>) => void;
@@ -143,6 +144,26 @@ export const useDocStore = create<DocState>()((set, get) => {
 
     saveCurrentDocs: async () => {
       await saveSnapshot(docsSnapshotFromState(get()));
+    },
+
+    restoreVersion: async (versionId) => {
+      set({ isSaving: true, error: null });
+      try {
+        const restored = snapshotWithDefaultTemplates(await restoreDocsVersion(versionId));
+        set({
+          pages: restored.pages,
+          folders: restored.folders,
+          activePageId: restored.activePageId,
+          isSaving: false,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Не удалось восстановить версию';
+        set({
+          isSaving: false,
+          error: message,
+        });
+        throw new Error(message, { cause: error });
+      }
     },
 
     addPage: (title, parentId) => {

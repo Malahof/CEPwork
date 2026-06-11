@@ -4,7 +4,8 @@ import { EcoAgentPanel } from './EcoAgentPanel';
 import { MarkdownEditor } from './MarkdownEditor';
 import { MarkdownPreview } from './MarkdownPreview';
 import { TemplateCreateDialog } from './TemplateCreateDialog';
-import { PanelLeft, FileText, FilePlus } from 'lucide-react';
+import { VersionHistoryDialog } from './VersionHistoryDialog';
+import { PanelLeft, FileText, FilePlus, History } from 'lucide-react';
 
 export function EditorPage() {
   const {
@@ -13,6 +14,7 @@ export function EditorPage() {
     activePageId,
     updatePage,
     createPageFromTemplate,
+    restoreVersion,
     sidebarOpen,
     toggleSidebar,
     isLoading,
@@ -20,8 +22,10 @@ export function EditorPage() {
     error,
   } = useDocStore();
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
 
   const activePage = pages.find((p) => p.id === activePageId);
+  const currentSnapshot = { pages, folders, activePageId };
 
   function handleCreateFromTemplate(values: Record<string, string>) {
     if (!activePage) return;
@@ -51,6 +55,14 @@ export function EditorPage() {
               Обновлено: {new Date(activePage.updatedAt).toLocaleString('ru-RU')}
             </span>
             {isSaving && <span className="editor-status">Сохранение...</span>}
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => setHistoryDialogOpen(true)}
+            >
+              <History size={14} />
+              <span>История версий</span>
+            </button>
             {activePage.isTemplate && (
               <button
                 className="btn btn-primary btn-sm"
@@ -95,6 +107,13 @@ export function EditorPage() {
               template={activePage}
               onClose={() => setTemplateDialogOpen(false)}
               onCreate={handleCreateFromTemplate}
+            />
+          )}
+          {historyDialogOpen && (
+            <VersionHistoryDialog
+              currentSnapshot={currentSnapshot}
+              onClose={() => setHistoryDialogOpen(false)}
+              onRestore={restoreVersion}
             />
           )}
         </div>

@@ -1,5 +1,5 @@
 import express from 'express';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import fs from 'fs-extra';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
@@ -9,6 +9,8 @@ const docsPath = process.env.DOCS_DATA_PATH
   ? path.resolve(process.env.DOCS_DATA_PATH)
   : path.resolve(__dirname, '..', 'data', 'docs.json');
 const dataDir = path.dirname(docsPath);
+const versionsDir = path.join(dataDir, 'versions');
+const maxVersions = 50;
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -18,7 +20,8 @@ app.use(express.json({ limit: '2mb' }));
 
 async function readDocs() {
   try {
-    const raw = await readFile(docsPath, 'utf8');
+    await fs.ensureDir(versionsDir);
+    const raw = await fs.readFile(docsPath, 'utf8');
     const parsed = JSON.parse(raw);
     return normalizeDocsSnapshot(parsed);
   } catch (error) {
@@ -31,10 +34,98 @@ async function readDocs() {
 }
 
 async function writeDocs(snapshot) {
-  await mkdir(dataDir, { recursive: true });
+  await fs.ensureDir(dataDir);
+  await fs.ensureDir(versionsDir);
   const tmpPath = `${docsPath}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(normalizeDocsSnapshot(snapshot), null, 2)}\n`);
-  await rename(tmpPath, docsPath);
+  await fs.writeFile(tmpPath, `${JSON.stringify(normalizeDocsSnapshot(snapshot), null, 2)}\n`);
+  await fs.rename(tmpPath, docsPath);
+}
+
+async function readDocsFromFile() {
+  try {
+    const raw = await fs.readFile(docsPath, 'utf8');
+    return normalizeDocsSnapshot(JSON.parse(raw));
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function saveCurrentDocsVersion() {
+  const currentSnapshot = await readDocsFromFile();
+  if (!currentSnapshot) return null;
+  return saveDocsVersion(currentSnapshot);
+}
+
+async function saveDocsVersion(snapshot) {
+  await fs.ensureDir(versionsDir);
+  const entries = await listDocsVersions();
+  const nextVersionNum = entries.reduce((max, entry) => Math.max(max, entry.versionNum), 0) + 1;
+  const timestamp = Date.now();
+  const versionId = `${timestamp}_${nextVersionNum}`;
+  const versionPath = versionFilePath(versionId);
+  await fs.writeFile(versionPath, `${JSON.stringify(normalizeDocsSnapshot(snapshot), null, 2)}\n`);
+  const stats = await fs.stat(versionPath);
+  await pruneOldVersions();
+  return {
+    versionId,
+    versionNum: nextVersionNum,
+    timestamp,
+    fileSize: stats.size,
+  };
+}
+
+async function listDocsVersions() {
+  await fs.ensureDir(versionsDir);
+  const files = await fs.readdir(versionsDir);
+  const entries = await Promise.all(
+    files
+      .filter((file) => /^\d+_\d+\.json$/.test(file))
+      .map(async (file) => {
+        const versionId = file.replace(/\.json$/, '');
+        const [timestampPart, versionNumPart] = versionId.split('_');
+        const stats = await fs.stat(path.join(versionsDir, file));
+        return {
+          versionId,
+          versionNum: Number(versionNumPart),
+          timestamp: Number(timestampPart),
+          fileSize: stats.size,
+        };
+      })
+  );
+
+  return entries.sort((a, b) => b.timestamp - a.timestamp || b.versionNum - a.versionNum);
+}
+
+async function pruneOldVersions() {
+  const entries = await listDocsVersions();
+  await Promise.all(entries.slice(maxVersions).map((entry) => fs.remove(versionFilePath(entry.versionId))));
+}
+
+function versionFilePath(versionId) {
+  validateVersionId(versionId);
+  return path.join(versionsDir, `${versionId}.json`);
+}
+
+function validateVersionId(versionId) {
+  if (!/^\d+_\d+$/.test(versionId)) {
+    const error = new Error('Invalid versionId');
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+async function readDocsVersion(versionId) {
+  const versionPath = versionFilePath(versionId);
+  if (!(await fs.pathExists(versionPath))) {
+    const error = new Error('Version not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return normalizeDocsSnapshot(await fs.readJson(versionPath));
 }
 
 function normalizeDocsSnapshot(value) {
@@ -207,13 +298,49 @@ app.get('/api/docs', async (_req, res, next) => {
   }
 });
 
+app.get('/api/docs/versions', async (_req, res, next) => {
+  try {
+    res.json(
+      (await listDocsVersions()).map(({ versionId, timestamp, fileSize }) => ({
+        versionId,
+        timestamp,
+        fileSize,
+      }))
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/docs/versions/:versionId', async (req, res, next) => {
+  try {
+    res.json(await readDocsVersion(req.params.versionId));
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
 app.post('/api/docs', async (req, res, next) => {
   try {
     const snapshot = normalizeDocsSnapshot(req.body);
+    await saveCurrentDocsVersion();
     await writeDocs(snapshot);
     res.json(snapshot);
   } catch (error) {
-    res.status(400);
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.post('/api/docs/restore/:versionId', async (req, res, next) => {
+  try {
+    const snapshot = await readDocsVersion(req.params.versionId);
+    await saveCurrentDocsVersion();
+    await writeDocs(snapshot);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
     next(error);
   }
 });
