@@ -359,6 +359,59 @@
   margin-top: 1px;
 }
 
+.chat-project-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.chat-project-toolbar .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.chat-projects {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.chat-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #666680;
+}
+
+.chat-project-card {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid #dfe2f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #24243e;
+  cursor: pointer;
+}
+
+.chat-project-card:hover {
+  border-color: #667eea;
+  background: #f8f9ff;
+}
+
+.chat-project-card strong {
+  font-size: 13px;
+}
+
+.chat-project-card span {
+  color: #666680;
+  font-size: 12px;
+}
+
 .eco-agent-mode {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -398,6 +451,7 @@
   border-radius: 12px;
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre-line;
 }
 
 .eco-agent-message.agent {
@@ -411,6 +465,35 @@
   background: #667eea;
   color: #fff;
   border-bottom-right-radius: 4px;
+}
+
+.chat-package-summary {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #ccefd6;
+  border-radius: 12px;
+  background: #f7fff9;
+  color: #1d6b35;
+}
+
+.chat-package-summary svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.chat-package-summary div {
+  display: grid;
+  gap: 3px;
+}
+
+.chat-package-summary strong {
+  font-size: 13px;
+}
+
+.chat-package-summary span {
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .eco-agent-draft {
@@ -440,6 +523,28 @@
   padding: 12px;
   border-top: 1px solid #e8e8f0;
   background: #fafbfe;
+}
+
+.chat-options-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-option-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-option {
+  justify-content: center;
+  width: 100%;
+  min-height: 36px;
+}
+
+.chat-finished {
+  color: #666680;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .eco-agent-input textarea {

@@ -3,12 +3,25 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
+import {
+  createAgentProject,
+  listOpenProjects,
+  selectAgentAnswer,
+  serializeAgentProject,
+} from './agent/stateMachine.js';
+import {
+  readAgentProjects,
+  updateAgentProjects,
+} from './agent/storage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
   ? path.resolve(process.env.DOCS_DATA_PATH)
   : path.resolve(__dirname, '..', 'data', 'docs.json');
 const dataDir = path.dirname(docsPath);
+const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
+  ? path.resolve(process.env.AGENT_PROJECTS_PATH)
+  : path.resolve(dataDir, 'eco_projects.json');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -214,6 +227,66 @@ app.post('/api/docs', async (req, res, next) => {
     res.json(snapshot);
   } catch (error) {
     res.status(400);
+    next(error);
+  }
+});
+
+app.post('/api/agent/start', async (_req, res, next) => {
+  try {
+    const project = createAgentProject();
+    await updateAgentProjects(agentProjectsPath, (projects) => {
+      projects.push(project);
+      return project;
+    });
+    res.json(serializeAgentProject(project));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/agent/select', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Invalid agent selection');
+
+    const projectId = requireString(body.projectId, 'projectId');
+    const answer = requireString(body.answer, 'answer');
+
+    const project = await updateAgentProjects(agentProjectsPath, (projects) => {
+      const found = projects.find((item) => item.id === projectId);
+      if (!found) {
+        const error = new Error('Agent project not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      return selectAgentAnswer(found, answer);
+    });
+
+    res.json(serializeAgentProject(project));
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.get('/api/agent/projects', async (_req, res, next) => {
+  try {
+    res.json(listOpenProjects(await readAgentProjects(agentProjectsPath)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/agent/state/:projectId', async (req, res, next) => {
+  try {
+    const projects = await readAgentProjects(agentProjectsPath);
+    const project = projects.find((item) => item.id === req.params.projectId);
+    if (!project) {
+      res.status(404);
+      throw new Error('Agent project not found');
+    }
+    res.json(serializeAgentProject(project));
+  } catch (error) {
     next(error);
   }
 });
