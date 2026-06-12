@@ -246,6 +246,29 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
   return project;
 }
 
+export function addExtractedFile(project, fileContent, now = Date.now()) {
+  if (!project.extractedData || typeof project.extractedData !== 'object' || Array.isArray(project.extractedData)) {
+    project.extractedData = {};
+  }
+
+  if (!Array.isArray(project.extractedData.fileContents)) {
+    project.extractedData.fileContents = [];
+  }
+
+  project.extractedData.fileContents.push(fileContent);
+  project.updatedAt = now;
+  addUserMessage(project, `Загрузил файл: ${fileContent.name}`, now);
+  addAgentMessage(
+    project,
+    [
+      'Файл загружен и обработан. Можете продолжать.',
+      `Файл обработан, извлечено ${fileContent.text.length} символов.`,
+    ].join('\n'),
+    now
+  );
+  return project;
+}
+
 export function serializeAgentProject(project) {
   return {
     ...project,

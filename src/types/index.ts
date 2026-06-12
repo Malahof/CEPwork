@@ -45,6 +45,15 @@ export interface AgentMessage {
   createdAt: number;
 }
 
+export interface AgentExtractedFile {
+  name: string;
+  type: string;
+  text: string;
+  mimeType?: string;
+  size?: number;
+  uploadedAt?: number;
+}
+
 export interface AgentProject {
   id: string;
   createdAt: number;
@@ -52,7 +61,10 @@ export interface AgentProject {
   status: 'selecting' | 'package_selected' | 'completed';
   currentNode: string | null;
   selections: Record<string, { answer: string; label: string }>;
-  extractedData: Record<string, unknown>;
+  extractedData: {
+    fileContents?: AgentExtractedFile[];
+    [key: string]: unknown;
+  };
   history: AgentMessage[];
   question: string | null;
   availableOptions: AgentOption[];

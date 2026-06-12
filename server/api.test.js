@@ -3,10 +3,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import * as XLSX from 'xlsx';
 
 const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
 process.env.AGENT_PROJECTS_PATH = path.join(tempDir, 'eco_projects.json');
+process.env.AGENT_UPLOADS_DIR = path.join(tempDir, 'uploads');
 process.env.OPENAI_API_KEY = '';
 
 const { app } = await import('./index.js');
@@ -118,6 +120,17 @@ async function selectAgentOption(projectId, answer) {
   return response.json();
 }
 
+async function uploadAgentFile(projectId, filePath, fileName, mimeType) {
+  const formData = new FormData();
+  formData.append('projectId', projectId);
+  formData.append('file', new Blob([await readFile(filePath)], { type: mimeType }), fileName);
+
+  return fetch(`${baseUrl}/api/agent/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 async function completeAgentPath(answers) {
   let project = await startAgentProject();
   for (const answer of answers) {
@@ -166,6 +179,38 @@ test('Цэпик starts a project and follows the waste development tree', async
   assert.equal(projectsResponse.status, 200);
   const projects = await projectsResponse.json();
   assert.ok(projects.some((project) => project.id === started.id));
+});
+
+test('POST /api/agent/upload parses XLSX and stores extracted project data', async () => {
+  const started = await startAgentProject();
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['Наименование', 'Количество'],
+    ['отходы упаковки из картона', 12],
+  ]);
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Отходы');
+  const filePath = path.join(tempDir, 'wastes.xlsx');
+  XLSX.writeFile(workbook, filePath);
+
+  const response = await uploadAgentFile(
+    started.id,
+    filePath,
+    'wastes.xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  assert.equal(response.status, 200);
+
+  const project = await response.json();
+  assert.equal(project.extractedData.fileContents.length, 1);
+  assert.equal(project.extractedData.fileContents[0].name, 'wastes.xlsx');
+  assert.equal(project.extractedData.fileContents[0].type, 'xlsx');
+  assert.match(project.extractedData.fileContents[0].text, /отходы упаковки из картона/);
+  assert.match(project.history.at(-1).text, /Файл обработан, извлечено \d+ символов/);
+  assert.equal(project.upload.message, `Файл обработан, извлечено ${project.upload.charCount} символов`);
+
+  const persisted = JSON.parse(await readFile(process.env.AGENT_PROJECTS_PATH, 'utf8'));
+  const persistedProject = persisted.projects.find((item) => item.id === started.id);
+  assert.equal(persistedProject.extractedData.fileContents[0].text, project.extractedData.fileContents[0].text);
 });
 
 test('Цэпик validates answers and maps every package leaf to its code', async () => {
