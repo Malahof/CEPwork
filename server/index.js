@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
+import { generate as generateCode111 } from './agent/generators/code111.js';
 import { createAgentRouter } from './routes/agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,12 @@ app.use('/api/agent', createAgentRouter({
   agentProjectsPath,
   casesDir: agentCasesDir,
   uploadsDir: agentUploadsDir,
+  generateCode111: (projectData, userSources) =>
+    generateCode111(projectData, userSources, {
+      generateDraft: generateEcoDocumentWithOpenAi,
+      readDocs,
+      writeDocs,
+    }),
   isRecord,
   requireString,
 }));

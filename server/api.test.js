@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import * as XLSX from 'xlsx';
+import { generate as generateCode111 } from './agent/generators/code111.js';
 
 const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
@@ -237,6 +238,57 @@ test('Цэпик finds and applies a matching reference case by OKVED', async ()
     'ртутные лампы',
   ]);
   assert.equal(confirmed.extractedData.caseData.instructionSnippet, confirmed.caseData.instructionSnippet);
+  assert.equal(confirmed.generation.status, 'failed');
+  assert.match(confirmed.history.at(-1).text, /OPENAI_API_KEY/);
+});
+
+test('code111 generator creates a docs page from project sources', async () => {
+  let capturedPayload = null;
+  let savedSnapshot = null;
+  const result = await generateCode111(
+    {
+      id: 'project-111',
+      packageCode: '111',
+      packageTitle: 'Инструкция',
+      extractedData: {
+        businessActivity: '47.19',
+        caseData: {
+          instructionSnippet: 'Инструкция для торгового предприятия',
+        },
+        fileContents: [
+          {
+            name: 'source.docx',
+            type: 'docx',
+            text: 'Перечень отходов из файла',
+          },
+        ],
+      },
+    },
+    'Название организации: ООО Тест',
+    {
+      generateDraft: async (payload) => {
+        capturedPayload = payload;
+        return '# Инструкция\n\nСгенерированный документ';
+      },
+      readDocs: async () => ({
+        pages: [],
+        folders: [],
+        activePageId: null,
+      }),
+      writeDocs: async (snapshot) => {
+        savedSnapshot = snapshot;
+      },
+      now: () => 123,
+    }
+  );
+
+  assert.equal(result.documents[0].id, 'cepik-code111-project-111-123');
+  assert.match(capturedPayload.documentRequest, /код 111/);
+  assert.match(capturedPayload.sources, /Инструкция для торгового предприятия/);
+  assert.match(capturedPayload.sources, /Перечень отходов из файла/);
+  assert.match(capturedPayload.sources, /ООО Тест/);
+  assert.equal(savedSnapshot.activePageId, 'cepik-code111-project-111-123');
+  assert.equal(savedSnapshot.pages[0].content, '# Инструкция\n\nСгенерированный документ');
 });
 
 test('Цэпик validates answers and maps every package leaf to its code', async () => {

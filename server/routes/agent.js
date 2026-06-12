@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
   addExtractedFile,
+  addGeneratedDocuments,
+  addGenerationError,
   confirmCaseMatch,
   createAgentProject,
   listOpenProjects,
@@ -15,7 +17,14 @@ import {
 import { findBestCase, getCaseById } from '../agent/cases.js';
 import { createUploadMiddleware, parseUploadedFile } from '../agent/upload.js';
 
-export function createAgentRouter({ agentProjectsPath, casesDir, uploadsDir, isRecord, requireString }) {
+export function createAgentRouter({
+  agentProjectsPath,
+  casesDir,
+  uploadsDir,
+  generateCode111,
+  isRecord,
+  requireString,
+}) {
   const router = Router();
   const upload = createUploadMiddleware(uploadsDir);
 
@@ -49,12 +58,14 @@ export function createAgentRouter({ agentProjectsPath, casesDir, uploadsDir, isR
         }
 
         if (found.status === 'awaiting_case_query') {
-          return submitCaseQuery(found, answer, await findBestCase(answer, casesDir));
+          const updated = submitCaseQuery(found, answer, await findBestCase(answer, casesDir));
+          return maybeGenerateDocuments(updated, generateCode111);
         }
 
         if (found.status === 'awaiting_case_confirmation') {
           const matchedCase = answer === 'yes' ? await getCaseById(found.pendingCaseId, casesDir) : null;
-          return confirmCaseMatch(found, answer, matchedCase);
+          const updated = confirmCaseMatch(found, answer, matchedCase);
+          return maybeGenerateDocuments(updated, generateCode111);
         }
 
         return selectAgentAnswer(found, answer);
@@ -130,4 +141,20 @@ function runUpload(upload, req, res) {
       else resolve();
     });
   });
+}
+
+async function maybeGenerateDocuments(project, generateCode111) {
+  if (project.status !== 'package_selected' || project.packageCode !== '111' || project.generation?.status === 'completed') {
+    return project;
+  }
+
+  try {
+    const result = await generateCode111(project, '');
+    return addGeneratedDocuments(project, result.documents);
+  } catch (error) {
+    return addGenerationError(
+      project,
+      error instanceof Error ? error.message : 'Неизвестная ошибка генерации'
+    );
+  }
 }

@@ -339,6 +339,28 @@ export function confirmCaseMatch(project, answer, matchedCase, now = Date.now())
   return project;
 }
 
+export function addGeneratedDocuments(project, documents, now = Date.now()) {
+  project.generation = {
+    status: 'completed',
+    documents,
+    updatedAt: now,
+  };
+  project.updatedAt = now;
+  addAgentMessage(project, `Созданы документы: ${documents.map((item) => item.title).join(', ')}.`, now);
+  return project;
+}
+
+export function addGenerationError(project, message, now = Date.now()) {
+  project.generation = {
+    status: 'failed',
+    error: message,
+    updatedAt: now,
+  };
+  project.updatedAt = now;
+  addAgentMessage(project, `Не удалось сгенерировать документ: ${message}`, now);
+  return project;
+}
+
 export function addExtractedFile(project, fileContent, now = Date.now()) {
   ensureExtractedData(project);
 

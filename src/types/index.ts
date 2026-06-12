@@ -54,6 +54,11 @@ export interface AgentExtractedFile {
   uploadedAt?: number;
 }
 
+export interface AgentGeneratedDocument {
+  id: string;
+  title: string;
+}
+
 export interface AgentProject {
   id: string;
   createdAt: number;
@@ -75,6 +80,12 @@ export interface AgentProject {
   caseData?: Record<string, unknown> | null;
   pendingCaseId?: string | null;
   pendingCaseTitle?: string | null;
+  generation?: {
+    status: 'completed' | 'failed';
+    documents?: AgentGeneratedDocument[];
+    error?: string;
+    updatedAt?: number;
+  };
 }
 
 export function isDocPage(item: TreeItem): item is DocPage {

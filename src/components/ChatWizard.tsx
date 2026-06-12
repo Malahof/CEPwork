@@ -229,6 +229,15 @@ export function ChatWizard() {
             </div>
           </div>
         )}
+        {project?.generation?.status === 'completed' && project.generation.documents?.length ? (
+          <div className="chat-package-summary">
+            <CheckCircle2 size={16} />
+            <div>
+              <strong>Документ создан</strong>
+              <span>{project.generation.documents.map((item) => item.title).join(', ')}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {error && <div className="editor-error">{error}</div>}
