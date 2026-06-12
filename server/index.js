@@ -16,6 +16,9 @@ const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
 const agentUploadsDir = process.env.AGENT_UPLOADS_DIR
   ? path.resolve(process.env.AGENT_UPLOADS_DIR)
   : path.resolve(__dirname, '..', 'temp', 'uploads');
+const agentCasesDir = process.env.AGENT_CASES_DIR
+  ? path.resolve(process.env.AGENT_CASES_DIR)
+  : path.resolve(__dirname, '..', 'data', 'cases');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -24,6 +27,7 @@ export const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use('/api/agent', createAgentRouter({
   agentProjectsPath,
+  casesDir: agentCasesDir,
   uploadsDir: agentUploadsDir,
   isRecord,
   requireString,

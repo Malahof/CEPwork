@@ -15,6 +15,7 @@ export function ChatWizard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [textAnswer, setTextAnswer] = useState('');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -90,11 +91,18 @@ export function ChatWizard() {
       const updated = await selectAgentAnswer(project.id, answer);
       setProject(updated);
       setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+      setTextAnswer('');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
       setIsSelecting(false);
     }
+  }
+
+  function handleSubmitTextAnswer() {
+    const answer = textAnswer.trim();
+    if (!answer) return;
+    void handleSelect(answer);
   }
 
   async function handleUpload(file: File) {
@@ -212,7 +220,7 @@ export function ChatWizard() {
             {message.text}
           </div>
         ))}
-        {project?.status === 'package_selected' && (
+        {project?.packageCode && (
           <div className="chat-package-summary">
             <CheckCircle2 size={16} />
             <div>
@@ -241,6 +249,26 @@ export function ChatWizard() {
                   {option.label}
                 </button>
               ))}
+            </div>
+          </>
+        ) : project?.status === 'awaiting_case_query' ? (
+          <>
+            <div className="chat-section-title">Введите данные для поиска эталона</div>
+            <textarea
+              value={textAnswer}
+              disabled={isSelecting}
+              placeholder="Например: 47.19 или розничная торговля"
+              onChange={(event) => setTextAnswer(event.target.value)}
+            />
+            <div className="eco-agent-actions">
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={isSelecting || !textAnswer.trim()}
+                onClick={handleSubmitTextAnswer}
+              >
+                Найти эталон
+              </button>
             </div>
           </>
         ) : project?.status === 'package_selected' ? (

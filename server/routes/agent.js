@@ -1,18 +1,21 @@
 import { Router } from 'express';
 import {
   addExtractedFile,
+  confirmCaseMatch,
   createAgentProject,
   listOpenProjects,
   selectAgentAnswer,
   serializeAgentProject,
+  submitCaseQuery,
 } from '../agent/stateMachine.js';
 import {
   readAgentProjects,
   updateAgentProjects,
 } from '../agent/storage.js';
+import { findBestCase, getCaseById } from '../agent/cases.js';
 import { createUploadMiddleware, parseUploadedFile } from '../agent/upload.js';
 
-export function createAgentRouter({ agentProjectsPath, uploadsDir, isRecord, requireString }) {
+export function createAgentRouter({ agentProjectsPath, casesDir, uploadsDir, isRecord, requireString }) {
   const router = Router();
   const upload = createUploadMiddleware(uploadsDir);
 
@@ -37,13 +40,23 @@ export function createAgentRouter({ agentProjectsPath, uploadsDir, isRecord, req
       const projectId = requireString(body.projectId, 'projectId');
       const answer = requireString(body.answer, 'answer');
 
-      const project = await updateAgentProjects(agentProjectsPath, (projects) => {
+      const project = await updateAgentProjects(agentProjectsPath, async (projects) => {
         const found = projects.find((item) => item.id === projectId);
         if (!found) {
           const error = new Error('Agent project not found');
           error.statusCode = 404;
           throw error;
         }
+
+        if (found.status === 'awaiting_case_query') {
+          return submitCaseQuery(found, answer, await findBestCase(answer, casesDir));
+        }
+
+        if (found.status === 'awaiting_case_confirmation') {
+          const matchedCase = answer === 'yes' ? await getCaseById(found.pendingCaseId, casesDir) : null;
+          return confirmCaseMatch(found, answer, matchedCase);
+        }
+
         return selectAgentAnswer(found, answer);
       });
 

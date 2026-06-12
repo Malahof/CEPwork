@@ -58,7 +58,7 @@ export interface AgentProject {
   id: string;
   createdAt: number;
   updatedAt: number;
-  status: 'selecting' | 'package_selected' | 'completed';
+  status: 'selecting' | 'awaiting_case_query' | 'awaiting_case_confirmation' | 'package_selected' | 'completed';
   currentNode: string | null;
   selections: Record<string, { answer: string; label: string }>;
   extractedData: {
@@ -71,6 +71,10 @@ export interface AgentProject {
   packageCode?: string;
   packageTitle?: string;
   documents?: string[];
+  matchedCaseId?: string | null;
+  caseData?: Record<string, unknown> | null;
+  pendingCaseId?: string | null;
+  pendingCaseTitle?: string | null;
 }
 
 export function isDocPage(item: TreeItem): item is DocPage {

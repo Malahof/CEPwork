@@ -164,11 +164,12 @@ test('Цэпик starts a project and follows the waste development tree', async
   );
 
   const completed = await selectAgentOption(started.id, 'fullWasteSet');
-  assert.equal(completed.status, 'package_selected');
+  assert.equal(completed.status, 'awaiting_case_query');
   assert.equal(completed.packageCode, '115');
   assert.deepEqual(completed.documents, ['Инструкция', 'Разрешение на захоронение']);
   assert.equal(completed.availableOptions.length, 0);
-  assert.match(completed.history.at(-1).text, /код 115/);
+  assert.match(completed.history.at(-2).text, /код 115/);
+  assert.equal(completed.question, 'Укажите ОКВЭД или описание деятельности.');
 
   const stateResponse = await fetch(`${baseUrl}/api/agent/state/${started.id}`);
   assert.equal(stateResponse.status, 200);
@@ -213,6 +214,31 @@ test('POST /api/agent/upload parses XLSX and stores extracted project data', asy
   assert.equal(persistedProject.extractedData.fileContents[0].text, project.extractedData.fileContents[0].text);
 });
 
+test('Цэпик finds and applies a matching reference case by OKVED', async () => {
+  const project = await completeAgentPath(['waste', 'development', 'instruction']);
+  assert.equal(project.status, 'awaiting_case_query');
+  assert.equal(project.packageCode, '111');
+
+  const matched = await selectAgentOption(project.id, '47.19');
+  assert.equal(matched.status, 'awaiting_case_confirmation');
+  assert.equal(matched.pendingCaseId, 'case_trade_001');
+  assert.deepEqual(
+    matched.availableOptions.map((option) => option.key),
+    ['yes', 'no']
+  );
+  assert.match(matched.history.at(-1).text, /Торговое предприятие/);
+
+  const confirmed = await selectAgentOption(project.id, 'yes');
+  assert.equal(confirmed.status, 'package_selected');
+  assert.equal(confirmed.matchedCaseId, 'case_trade_001');
+  assert.deepEqual(confirmed.caseData.typicalWastes, [
+    'отходы упаковки из картона',
+    'мусор от бытовых помещений',
+    'ртутные лампы',
+  ]);
+  assert.equal(confirmed.extractedData.caseData.instructionSnippet, confirmed.caseData.instructionSnippet);
+});
+
 test('Цэпик validates answers and maps every package leaf to its code', async () => {
   const started = await startAgentProject();
   const invalidResponse = await fetch(`${baseUrl}/api/agent/select`, {
@@ -244,7 +270,7 @@ test('Цэпик validates answers and maps every package leaf to its code', asy
 
   for (const [answers, expectedCode] of cases) {
     const completed = await completeAgentPath(answers);
-    assert.equal(completed.status, 'package_selected');
+    assert.equal(completed.status, 'awaiting_case_query');
     assert.equal(completed.packageCode, expectedCode);
     assert.ok(completed.documents.length > 0);
   }
