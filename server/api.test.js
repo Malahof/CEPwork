@@ -291,6 +291,84 @@ test('code111 generator creates a docs page from project sources', async () => {
   assert.equal(savedSnapshot.pages[0].content, '# Инструкция\n\nСгенерированный документ');
 });
 
+test('code111 generator creates a placeholder page when OpenAI quota is exhausted', async () => {
+  let savedSnapshot = null;
+  const quotaError = new Error('You exceeded your current quota, please check your plan and billing details.');
+  quotaError.statusCode = 429;
+  quotaError.code = 'insufficient_quota';
+
+  const result = await generateCode111(
+    {
+      id: 'project-quota',
+      packageCode: '111',
+      packageTitle: 'Инструкция',
+      matchedCaseId: 'case_trade_001',
+      extractedData: {
+        businessActivity: '47.19',
+        fileContents: [
+          {
+            name: 'source.docx',
+            type: 'docx',
+            text: 'Перечень отходов из файла',
+          },
+        ],
+      },
+    },
+    '',
+    {
+      generateDraft: async () => {
+        throw quotaError;
+      },
+      readDocs: async () => ({
+        pages: [],
+        folders: [],
+        activePageId: null,
+      }),
+      writeDocs: async (snapshot) => {
+        savedSnapshot = snapshot;
+      },
+      now: () => 456,
+    }
+  );
+
+  assert.equal(result.documents[0].id, 'cepik-code111-project-quota-456');
+  assert.equal(savedSnapshot.activePageId, 'cepik-code111-project-quota-456');
+  assert.match(savedSnapshot.pages[0].content, /Документ не сгенерирован из-за лимита API/);
+  assert.match(savedSnapshot.pages[0].content, /case_trade_001/);
+  assert.match(savedSnapshot.pages[0].content, /source\.docx: 25 символов/);
+});
+
+test('code111 generator keeps non-quota OpenAI errors as failures', async () => {
+  const authError = new Error('Invalid API key');
+  authError.statusCode = 401;
+
+  await assert.rejects(
+    () =>
+      generateCode111(
+        {
+          id: 'project-auth',
+          packageCode: '111',
+          packageTitle: 'Инструкция',
+          extractedData: {},
+        },
+        '',
+        {
+          generateDraft: async () => {
+            throw authError;
+          },
+          readDocs: async () => {
+            throw new Error('readDocs should not be called');
+          },
+          writeDocs: async () => {
+            throw new Error('writeDocs should not be called');
+          },
+          now: () => 789,
+        }
+      ),
+    /Invalid API key/
+  );
+});
+
 test('Цэпик validates answers and maps every package leaf to its code', async () => {
   const started = await startAgentProject();
   const invalidResponse = await fetch(`${baseUrl}/api/agent/select`, {

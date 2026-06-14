@@ -1,10 +1,18 @@
 export async function generate(projectData, userSources, { generateDraft, readDocs, writeDocs, now = Date.now }) {
   const sources = buildSources(projectData, userSources);
-  const content = await generateDraft({
-    documentRequest:
-      'Разработай Инструкцию по обращению с отходами и Заявление (код 111) на основе предоставленных данных.',
-    sources,
-  });
+  let content;
+  try {
+    content = await generateDraft({
+      documentRequest:
+        'Разработай Инструкцию по обращению с отходами и Заявление (код 111) на основе предоставленных данных.',
+      sources,
+    });
+  } catch (error) {
+    if (!isOpenAiQuotaError(error)) {
+      throw error;
+    }
+    content = buildQuotaFallbackMarkdown(projectData, error);
+  }
 
   const snapshot = await readDocs();
   const page = createGeneratedPage(projectData, content, snapshot, now());
@@ -73,4 +81,49 @@ function createGeneratedPage(projectData, content, snapshot, now) {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function isOpenAiQuotaError(error) {
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
+  const code = typeof error?.code === 'string' ? error.code.toLowerCase() : '';
+  return (
+    error?.statusCode === 429 &&
+    (code === 'insufficient_quota' ||
+      message.includes('quota') ||
+      message.includes('лимит') ||
+      message.includes('превыш'))
+  );
+}
+
+function buildQuotaFallbackMarkdown(projectData, error) {
+  const activity = projectData.extractedData?.businessActivity
+    ? `\n\nОКВЭД/описание деятельности: ${projectData.extractedData.businessActivity}`
+    : '';
+  const caseInfo =
+    projectData.matchedCaseId || projectData.caseData || projectData.extractedData?.caseData
+      ? `\n\nЭталонный кейс: ${projectData.matchedCaseId ?? 'применён'}`
+      : '';
+  const files = Array.isArray(projectData.extractedData?.fileContents)
+    ? projectData.extractedData.fileContents
+    : [];
+  const fileInfo = files.length
+    ? `\n\nФайлы-источники:\n${files.map((file) => `- ${file.name}: ${file.text.length} символов`).join('\n')}`
+    : '';
+  const reason = typeof error?.message === 'string' ? error.message : 'OpenAI API вернул ошибку квоты';
+
+  return `# Документ не сгенерирован из-за лимита API
+
+Документ не сгенерирован из-за лимита API. Цэпик создал эту страницу-заглушку, чтобы сохранить ход проекта и проверить остальную логику: выбор пакета, загрузку файлов, подбор эталона и создание страницы в документации.
+
+## Что произошло
+
+OpenAI вернул ошибку квоты: ${reason}
+
+## Контекст проекта
+
+Пакет: ${projectData.packageTitle ?? 'Инструкция'} (код ${projectData.packageCode ?? '111'})${activity}${caseInfo}${fileInfo}
+
+## Следующий шаг
+
+После пополнения баланса или замены ключа повторите генерацию, чтобы заменить эту заглушку реальным Markdown-документом.`;
 }

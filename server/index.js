@@ -212,6 +212,8 @@ ${payload.sources}`;
   if (!response.ok) {
     const error = new Error(body?.error?.message ?? 'OpenAI API вернул ошибку');
     error.statusCode = response.status;
+    error.code = body?.error?.code;
+    error.type = body?.error?.type;
     throw error;
   }
 
