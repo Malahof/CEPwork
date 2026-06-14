@@ -19,7 +19,7 @@ export function ChatWizard() {
   const [textAnswer, setTextAnswer] = useState('');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const loadDocs = useDocStore((state) => state.loadDocs);
+  const refreshDocs = useDocStore((state) => state.refreshDocs);
 
   const messages = useMemo(
     () =>
@@ -95,7 +95,7 @@ export function ChatWizard() {
       setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
       setTextAnswer('');
       if (updated.generation?.status === 'completed') {
-        await loadDocs();
+        await refreshDocs();
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');

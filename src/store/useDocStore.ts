@@ -14,6 +14,7 @@ interface DocState {
   error: string | null;
 
   loadDocs: () => Promise<void>;
+  refreshDocs: () => Promise<void>;
   saveCurrentDocs: () => Promise<void>;
   addPage: (title: string, parentId: string | null) => DocPage;
   createPageFromTemplate: (templateId: string, values: Record<string, string>) => DocPage | null;
@@ -136,6 +137,22 @@ export const useDocStore = create<DocState>()((set, get) => {
       } catch (error) {
         set({
           isLoading: false,
+          error: error instanceof Error ? error.message : 'Не удалось загрузить документы',
+        });
+      }
+    },
+
+    refreshDocs: async () => {
+      try {
+        const snapshot = snapshotWithDefaultTemplates(await fetchDocs());
+        set({
+          pages: snapshot.pages,
+          folders: snapshot.folders,
+          activePageId: snapshot.activePageId,
+          error: null,
+        });
+      } catch (error) {
+        set({
           error: error instanceof Error ? error.message : 'Не удалось загрузить документы',
         });
       }
