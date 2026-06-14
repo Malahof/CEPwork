@@ -7,6 +7,7 @@ import {
   startAgentProject,
   uploadAgentFile,
 } from '../api/agentApi';
+import { useDocStore } from '../store/useDocStore';
 import type { AgentProject } from '../types';
 
 export function ChatWizard() {
@@ -18,6 +19,7 @@ export function ChatWizard() {
   const [textAnswer, setTextAnswer] = useState('');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const loadDocs = useDocStore((state) => state.loadDocs);
 
   const messages = useMemo(
     () =>
@@ -92,6 +94,9 @@ export function ChatWizard() {
       setProject(updated);
       setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
       setTextAnswer('');
+      if (updated.generation?.status === 'completed') {
+        await loadDocs();
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
