@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { generateWithGemini } from './ai/geminiClient.js';
 import { defaultDocsSnapshot } from './defaultDocs.js';
 import { generate as generateCode111 } from './agent/generators/code111.js';
 import { createAgentRouter } from './routes/agent.js';
@@ -21,7 +23,7 @@ const agentCasesDir = process.env.AGENT_CASES_DIR
   ? path.resolve(process.env.AGENT_CASES_DIR)
   : path.resolve(__dirname, '..', 'data', 'cases');
 const port = Number(process.env.PORT ?? 3001);
-const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+const geminiModel = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
 
 export const app = express();
 
@@ -32,7 +34,7 @@ app.use('/api/agent', createAgentRouter({
   uploadsDir: agentUploadsDir,
   generateCode111: (projectData, userSources) =>
     generateCode111(projectData, userSources, {
-      generateDraft: generateEcoDocumentWithOpenAi,
+      generateDraft: generateEcoDocumentWithGemini,
       readDocs,
       writeDocs,
     }),
@@ -154,14 +156,7 @@ function optionalString(value, field) {
   return requireString(value, field);
 }
 
-async function generateEcoDocumentWithOpenAi(payload) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    const error = new Error('OPENAI_API_KEY не настроен на сервере');
-    error.statusCode = 503;
-    throw error;
-  }
-
+async function generateEcoDocumentWithGemini(payload) {
   const isCorrection = Boolean(payload.corrections);
   const userPrompt = isCorrection
     ? `Доработай проект экологической документации.
@@ -183,46 +178,13 @@ ${payload.corrections}`
 Источники информации:
 ${payload.sources}`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: openAiModel,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Ты русскоязычный разработчик экологической документации. ' +
-            'Пиши структурированный Markdown, уточняй недостающие исходные данные, ' +
-            'не выдумывай числовые показатели и нормативные реквизиты без источников.',
-        },
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+  return generateWithGemini(
+    `Ты русскоязычный разработчик экологической документации. Пиши структурированный Markdown, уточняй недостающие исходные данные, не выдумывай числовые показатели и нормативные реквизиты без источников.
 
-  const body = await response.json();
-  if (!response.ok) {
-    const error = new Error(body?.error?.message ?? 'OpenAI API вернул ошибку');
-    error.statusCode = response.status;
-    error.code = body?.error?.code;
-    error.type = body?.error?.type;
-    throw error;
-  }
-
-  const draft = body?.choices?.[0]?.message?.content;
-  if (typeof draft !== 'string' || !draft.trim()) {
-    throw new Error('OpenAI API вернул пустой ответ');
-  }
-
-  return draft.trim();
+Пользовательский запрос:
+${userPrompt}`,
+    geminiModel
+  );
 }
 
 app.get('/api/docs', async (_req, res, next) => {
@@ -263,7 +225,7 @@ app.post('/api/ai/eco-agent', async (req, res, next) => {
     }
 
     res.json({
-      draft: await generateEcoDocumentWithOpenAi({
+      draft: await generateEcoDocumentWithGemini({
         documentRequest,
         sources,
         draft,

@@ -10,7 +10,7 @@ const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
 process.env.AGENT_PROJECTS_PATH = path.join(tempDir, 'eco_projects.json');
 process.env.AGENT_UPLOADS_DIR = path.join(tempDir, 'uploads');
-process.env.OPENAI_API_KEY = '';
+process.env.GEMINI_API_KEY = '';
 
 const { app } = await import('./index.js');
 
@@ -239,7 +239,7 @@ test('Цэпик finds and applies a matching reference case by OKVED', async ()
   ]);
   assert.equal(confirmed.extractedData.caseData.instructionSnippet, confirmed.caseData.instructionSnippet);
   assert.equal(confirmed.generation.status, 'failed');
-  assert.match(confirmed.history.at(-1).text, /OPENAI_API_KEY/);
+  assert.match(confirmed.history.at(-1).text, /GEMINI_API_KEY/);
 });
 
 test('code111 generator creates a docs page from project sources', async () => {
@@ -291,7 +291,7 @@ test('code111 generator creates a docs page from project sources', async () => {
   assert.equal(savedSnapshot.pages[0].content, '# Инструкция\n\nСгенерированный документ');
 });
 
-test('code111 generator creates a placeholder page when OpenAI quota is exhausted', async () => {
+test('code111 generator creates a placeholder page when AI quota is exhausted', async () => {
   let savedSnapshot = null;
   const quotaError = new Error('You exceeded your current quota, please check your plan and billing details.');
   quotaError.statusCode = 429;
@@ -338,7 +338,7 @@ test('code111 generator creates a placeholder page when OpenAI quota is exhauste
   assert.match(savedSnapshot.pages[0].content, /source\.docx: 25 символов/);
 });
 
-test('code111 generator keeps non-quota OpenAI errors as failures', async () => {
+test('code111 generator keeps non-quota AI errors as failures', async () => {
   const authError = new Error('Invalid API key');
   authError.statusCode = 401;
 
@@ -406,7 +406,7 @@ test('Цэпик validates answers and maps every package leaf to its code', asy
   }
 });
 
-test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {
+test('POST /api/ai/eco-agent requires GEMINI_API_KEY', async () => {
   const response = await fetch(`${baseUrl}/api/ai/eco-agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -418,6 +418,6 @@ test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {
 
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), {
-    error: 'OPENAI_API_KEY не настроен на сервере',
+    error: 'GEMINI_API_KEY не настроен на сервере',
   });
 });

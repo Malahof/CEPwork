@@ -25,7 +25,7 @@ export async function generateEcoDocument(
   };
 
   if (!response.ok || !body.draft) {
-    throw new Error(body.error ?? 'Не удалось получить ответ OpenAI');
+    throw new Error(body.error ?? 'Не удалось получить ответ Gemini');
   }
 
   return { draft: body.draft };

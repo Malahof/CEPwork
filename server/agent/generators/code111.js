@@ -8,7 +8,7 @@ export async function generate(projectData, userSources, { generateDraft, readDo
       sources,
     });
   } catch (error) {
-    if (!isOpenAiQuotaError(error)) {
+    if (!isAiQuotaError(error)) {
       throw error;
     }
     content = buildQuotaFallbackMarkdown(projectData, error);
@@ -83,15 +83,21 @@ function createGeneratedPage(projectData, content, snapshot, now) {
   };
 }
 
-function isOpenAiQuotaError(error) {
+function isAiQuotaError(error) {
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
   const code = typeof error?.code === 'string' ? error.code.toLowerCase() : '';
+  const isQuotaMessage =
+    code === 'insufficient_quota' ||
+    code === 'resource_exhausted' ||
+    message.includes('quota') ||
+    message.includes('лимит') ||
+    message.includes('превыш') ||
+    message.includes('resource exhausted') ||
+    message.includes('rate limit');
+
   return (
-    error?.statusCode === 429 &&
-    (code === 'insufficient_quota' ||
-      message.includes('quota') ||
-      message.includes('лимит') ||
-      message.includes('превыш'))
+    isQuotaMessage &&
+    (error?.statusCode === undefined || error.statusCode === 429)
   );
 }
 
@@ -109,7 +115,7 @@ function buildQuotaFallbackMarkdown(projectData, error) {
   const fileInfo = files.length
     ? `\n\nФайлы-источники:\n${files.map((file) => `- ${file.name}: ${file.text.length} символов`).join('\n')}`
     : '';
-  const reason = typeof error?.message === 'string' ? error.message : 'OpenAI API вернул ошибку квоты';
+  const reason = typeof error?.message === 'string' ? error.message : 'AI API вернул ошибку квоты';
 
   return `# Документ не сгенерирован из-за лимита API
 
@@ -117,7 +123,7 @@ function buildQuotaFallbackMarkdown(projectData, error) {
 
 ## Что произошло
 
-OpenAI вернул ошибку квоты: ${reason}
+AI-провайдер вернул ошибку квоты: ${reason}
 
 ## Контекст проекта
 
