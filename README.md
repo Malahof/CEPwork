@@ -47,7 +47,7 @@ GEMINI_API_KEY=... npm run dev
 Опционально можно сменить модель:
 
 ```bash
-GEMINI_MODEL=gemini-2.0-flash npm run dev
+GEMINI_MODEL=gemini-2.5-flash npm run dev
 ```
 
 ## Доступные команды

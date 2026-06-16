@@ -23,7 +23,7 @@ const agentCasesDir = process.env.AGENT_CASES_DIR
   ? path.resolve(process.env.AGENT_CASES_DIR)
   : path.resolve(__dirname, '..', 'data', 'cases');
 const port = Number(process.env.PORT ?? 3001);
-const geminiModel = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
+const geminiModel = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
 
 export const app = express();
 

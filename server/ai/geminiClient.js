@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const defaultModelName = 'gemini-2.0-flash';
+const defaultModelName = 'gemini-2.5-flash';
 
 export async function generateWithGemini(prompt, modelName = defaultModelName) {
   const apiKey = process.env.GEMINI_API_KEY;
