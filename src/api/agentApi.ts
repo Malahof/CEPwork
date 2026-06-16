@@ -29,6 +29,18 @@ export async function fetchAgentProjectState(projectId: string): Promise<AgentPr
   return parseAgentResponse(response, 'Не удалось загрузить состояние проекта');
 }
 
+export async function uploadAgentFile(projectId: string, file: File): Promise<AgentProject> {
+  const formData = new FormData();
+  formData.append('projectId', projectId);
+  formData.append('file', file);
+
+  const response = await fetch('/api/agent/upload', {
+    method: 'POST',
+    body: formData,
+  });
+  return parseAgentResponse(response, 'Не удалось загрузить файл для Цэпика');
+}
+
 async function parseAgentResponse(response: Response, fallbackMessage: string): Promise<AgentProject> {
   const body = (await response.json()) as Partial<AgentProject> & { error?: string };
   if (!response.ok || !body.id) {

@@ -13,11 +13,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "concurrently": "^10.0.1",
     "docx": "^9.7.1",
     "dompurify": "^3.4.8",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "lucide-react": "^1.17.0",
+    "mammoth": "^1.12.0",
+    "multer": "^2.1.1",
+    "pdf-parse": "^2.4.5",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
@@ -26,6 +31,7 @@
     "rehype-slug": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
+    "tesseract.js": "^7.0.0",
     "unified": "^11.0.5",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.14"

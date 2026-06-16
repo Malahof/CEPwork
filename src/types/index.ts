@@ -45,20 +45,47 @@ export interface AgentMessage {
   createdAt: number;
 }
 
+export interface AgentExtractedFile {
+  name: string;
+  type: string;
+  text: string;
+  mimeType?: string;
+  size?: number;
+  uploadedAt?: number;
+}
+
+export interface AgentGeneratedDocument {
+  id: string;
+  title: string;
+}
+
 export interface AgentProject {
   id: string;
   createdAt: number;
   updatedAt: number;
-  status: 'selecting' | 'package_selected' | 'completed';
+  status: 'selecting' | 'awaiting_case_query' | 'awaiting_case_confirmation' | 'package_selected' | 'completed';
   currentNode: string | null;
   selections: Record<string, { answer: string; label: string }>;
-  extractedData: Record<string, unknown>;
+  extractedData: {
+    fileContents?: AgentExtractedFile[];
+    [key: string]: unknown;
+  };
   history: AgentMessage[];
   question: string | null;
   availableOptions: AgentOption[];
   packageCode?: string;
   packageTitle?: string;
   documents?: string[];
+  matchedCaseId?: string | null;
+  caseData?: Record<string, unknown> | null;
+  pendingCaseId?: string | null;
+  pendingCaseTitle?: string | null;
+  generation?: {
+    status: 'completed' | 'failed';
+    documents?: AgentGeneratedDocument[];
+    error?: string;
+    updatedAt?: number;
+  };
 }
 
 export function isDocPage(item: TreeItem): item is DocPage {

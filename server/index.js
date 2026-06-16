@@ -1,18 +1,12 @@
+import 'dotenv/config';
 import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { generateWithGeminiWithRetry } from './ai/geminiClient.js';
 import { defaultDocsSnapshot } from './defaultDocs.js';
-import {
-  createAgentProject,
-  listOpenProjects,
-  selectAgentAnswer,
-  serializeAgentProject,
-} from './agent/stateMachine.js';
-import {
-  readAgentProjects,
-  updateAgentProjects,
-} from './agent/storage.js';
+import { generate as generateCode111 } from './agent/generators/code111.js';
+import { createAgentRouter } from './routes/agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
@@ -22,12 +16,31 @@ const dataDir = path.dirname(docsPath);
 const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
   ? path.resolve(process.env.AGENT_PROJECTS_PATH)
   : path.resolve(dataDir, 'eco_projects.json');
+const agentUploadsDir = process.env.AGENT_UPLOADS_DIR
+  ? path.resolve(process.env.AGENT_UPLOADS_DIR)
+  : path.resolve(__dirname, '..', 'temp', 'uploads');
+const agentCasesDir = process.env.AGENT_CASES_DIR
+  ? path.resolve(process.env.AGENT_CASES_DIR)
+  : path.resolve(__dirname, '..', 'data', 'cases');
 const port = Number(process.env.PORT ?? 3001);
-const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+const geminiModel = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
 
 export const app = express();
 
 app.use(express.json({ limit: '2mb' }));
+app.use('/api/agent', createAgentRouter({
+  agentProjectsPath,
+  casesDir: agentCasesDir,
+  uploadsDir: agentUploadsDir,
+  generateCode111: (projectData, userSources) =>
+    generateCode111(projectData, userSources, {
+      generateDraft: generateEcoDocumentWithGemini,
+      readDocs,
+      writeDocs,
+    }),
+  isRecord,
+  requireString,
+}));
 
 async function readDocs() {
   try {
@@ -143,14 +156,7 @@ function optionalString(value, field) {
   return requireString(value, field);
 }
 
-async function generateEcoDocumentWithOpenAi(payload) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    const error = new Error('OPENAI_API_KEY не настроен на сервере');
-    error.statusCode = 503;
-    throw error;
-  }
-
+async function generateEcoDocumentWithGemini(payload) {
   const isCorrection = Boolean(payload.corrections);
   const userPrompt = isCorrection
     ? `Доработай проект экологической документации.
@@ -172,44 +178,13 @@ ${payload.corrections}`
 Источники информации:
 ${payload.sources}`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: openAiModel,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Ты русскоязычный разработчик экологической документации. ' +
-            'Пиши структурированный Markdown, уточняй недостающие исходные данные, ' +
-            'не выдумывай числовые показатели и нормативные реквизиты без источников.',
-        },
-        {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-    }),
-  });
+  return generateWithGeminiWithRetry(
+    `Ты русскоязычный разработчик экологической документации. Пиши структурированный Markdown, уточняй недостающие исходные данные, не выдумывай числовые показатели и нормативные реквизиты без источников.
 
-  const body = await response.json();
-  if (!response.ok) {
-    const error = new Error(body?.error?.message ?? 'OpenAI API вернул ошибку');
-    error.statusCode = response.status;
-    throw error;
-  }
-
-  const draft = body?.choices?.[0]?.message?.content;
-  if (typeof draft !== 'string' || !draft.trim()) {
-    throw new Error('OpenAI API вернул пустой ответ');
-  }
-
-  return draft.trim();
+Пользовательский запрос:
+${userPrompt}`,
+    geminiModel
+  );
 }
 
 app.get('/api/docs', async (_req, res, next) => {
@@ -227,66 +202,6 @@ app.post('/api/docs', async (req, res, next) => {
     res.json(snapshot);
   } catch (error) {
     res.status(400);
-    next(error);
-  }
-});
-
-app.post('/api/agent/start', async (_req, res, next) => {
-  try {
-    const project = createAgentProject();
-    await updateAgentProjects(agentProjectsPath, (projects) => {
-      projects.push(project);
-      return project;
-    });
-    res.json(serializeAgentProject(project));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/api/agent/select', async (req, res, next) => {
-  try {
-    const body = req.body;
-    if (!isRecord(body)) throw new Error('Invalid agent selection');
-
-    const projectId = requireString(body.projectId, 'projectId');
-    const answer = requireString(body.answer, 'answer');
-
-    const project = await updateAgentProjects(agentProjectsPath, (projects) => {
-      const found = projects.find((item) => item.id === projectId);
-      if (!found) {
-        const error = new Error('Agent project not found');
-        error.statusCode = 404;
-        throw error;
-      }
-      return selectAgentAnswer(found, answer);
-    });
-
-    res.json(serializeAgentProject(project));
-  } catch (error) {
-    res.status(error.statusCode ?? 400);
-    next(error);
-  }
-});
-
-app.get('/api/agent/projects', async (_req, res, next) => {
-  try {
-    res.json(listOpenProjects(await readAgentProjects(agentProjectsPath)));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/api/agent/state/:projectId', async (req, res, next) => {
-  try {
-    const projects = await readAgentProjects(agentProjectsPath);
-    const project = projects.find((item) => item.id === req.params.projectId);
-    if (!project) {
-      res.status(404);
-      throw new Error('Agent project not found');
-    }
-    res.json(serializeAgentProject(project));
-  } catch (error) {
     next(error);
   }
 });
@@ -310,7 +225,7 @@ app.post('/api/ai/eco-agent', async (req, res, next) => {
     }
 
     res.json({
-      draft: await generateEcoDocumentWithOpenAi({
+      draft: await generateEcoDocumentWithGemini({
         documentRequest,
         sources,
         draft,

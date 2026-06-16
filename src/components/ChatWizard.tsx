@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bot, CheckCircle2, FolderClock, Play, RefreshCw, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, CheckCircle2, FolderClock, Play, RefreshCw, Sparkles, UploadCloud } from 'lucide-react';
 import {
   fetchAgentProjectState,
   fetchAgentProjects,
   selectAgentAnswer,
   startAgentProject,
+  uploadAgentFile,
 } from '../api/agentApi';
+import { useDocStore } from '../store/useDocStore';
 import type { AgentProject } from '../types';
 
 export function ChatWizard() {
@@ -13,7 +15,11 @@ export function ChatWizard() {
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [textAnswer, setTextAnswer] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const refreshDocs = useDocStore((state) => state.refreshDocs);
 
   const messages = useMemo(
     () =>
@@ -27,6 +33,7 @@ export function ChatWizard() {
       ],
     [project]
   );
+  const extractedFileCount = project?.extractedData.fileContents?.length ?? 0;
 
   useEffect(() => {
     let isMounted = true;
@@ -86,10 +93,36 @@ export function ChatWizard() {
       const updated = await selectAgentAnswer(project.id, answer);
       setProject(updated);
       setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+      setTextAnswer('');
+      if (updated.generation?.status === 'completed') {
+        await refreshDocs();
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
       setIsSelecting(false);
+    }
+  }
+
+  function handleSubmitTextAnswer() {
+    const answer = textAnswer.trim();
+    if (!answer) return;
+    void handleSelect(answer);
+  }
+
+  async function handleUpload(file: File) {
+    if (!project || isUploading) return;
+
+    setIsUploading(true);
+    setError(null);
+    try {
+      const updated = await uploadAgentFile(project.id, file);
+      setProject(updated);
+      setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Не удалось загрузить файл');
+    } finally {
+      setIsUploading(false);
     }
   }
 
@@ -106,8 +139,8 @@ export function ChatWizard() {
       <div className="eco-agent-role">
         <Sparkles size={16} />
         <span>
-          Многошаговый помощник по разработке экологической документации. Этап А:
-          выбор сферы, направления и пакета по строгому дереву.
+          Многошаговый помощник по разработке экологической документации. Этап Б:
+          выбор пакета и загрузка исходных файлов для парсинга.
         </span>
       </div>
 
@@ -135,7 +168,33 @@ export function ChatWizard() {
           <RefreshCw size={14} />
           <span>Проекты</span>
         </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          type="button"
+          disabled={!project || isLoading || isUploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <UploadCloud size={14} />
+          <span>{isUploading ? 'Загрузка…' : 'Загрузить файл'}</span>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".docx,.xlsx,.xls,.pdf,.jpg,.jpeg,.png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png"
+          hidden
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (file) void handleUpload(file);
+          }}
+        />
       </div>
+
+      {project && (
+        <div className="chat-upload-status">
+          Файлы-источники: {extractedFileCount}
+        </div>
+      )}
 
       {!project && projects.length > 0 && (
         <section className="chat-projects">
@@ -166,7 +225,7 @@ export function ChatWizard() {
             {message.text}
           </div>
         ))}
-        {project?.status === 'package_selected' && (
+        {project?.packageCode && (
           <div className="chat-package-summary">
             <CheckCircle2 size={16} />
             <div>
@@ -175,6 +234,15 @@ export function ChatWizard() {
             </div>
           </div>
         )}
+        {project?.generation?.status === 'completed' && project.generation.documents?.length ? (
+          <div className="chat-package-summary">
+            <CheckCircle2 size={16} />
+            <div>
+              <strong>Документ создан</strong>
+              <span>{project.generation.documents.map((item) => item.title).join(', ')}</span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {error && <div className="editor-error">{error}</div>}
@@ -197,9 +265,29 @@ export function ChatWizard() {
               ))}
             </div>
           </>
+        ) : project?.status === 'awaiting_case_query' ? (
+          <>
+            <div className="chat-section-title">Введите данные для поиска эталона</div>
+            <textarea
+              value={textAnswer}
+              disabled={isSelecting}
+              placeholder="Например: 47.19 или розничная торговля"
+              onChange={(event) => setTextAnswer(event.target.value)}
+            />
+            <div className="eco-agent-actions">
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={isSelecting || !textAnswer.trim()}
+                onClick={handleSubmitTextAnswer}
+              >
+                Найти эталон
+              </button>
+            </div>
+          </>
         ) : project?.status === 'package_selected' ? (
           <div className="chat-finished">
-            Пакет выбран. На следующем этапе Цэпик сможет принимать файлы и источники.
+            Пакет выбран. Можно загрузить DOCX, XLSX, PDF или изображение как источник.
           </div>
         ) : (
           <div className="chat-finished">Нажмите «Новый проект», чтобы начать диалог.</div>

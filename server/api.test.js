@@ -3,11 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import * as XLSX from 'xlsx';
+import { generate as generateCode111 } from './agent/generators/code111.js';
 
 const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
 process.env.AGENT_PROJECTS_PATH = path.join(tempDir, 'eco_projects.json');
-process.env.OPENAI_API_KEY = '';
+process.env.AGENT_UPLOADS_DIR = path.join(tempDir, 'uploads');
+process.env.GEMINI_API_KEY = '';
 
 const { app } = await import('./index.js');
 
@@ -118,6 +121,17 @@ async function selectAgentOption(projectId, answer) {
   return response.json();
 }
 
+async function uploadAgentFile(projectId, filePath, fileName, mimeType) {
+  const formData = new FormData();
+  formData.append('projectId', projectId);
+  formData.append('file', new Blob([await readFile(filePath)], { type: mimeType }), fileName);
+
+  return fetch(`${baseUrl}/api/agent/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+}
+
 async function completeAgentPath(answers) {
   let project = await startAgentProject();
   for (const answer of answers) {
@@ -151,11 +165,12 @@ test('Цэпик starts a project and follows the waste development tree', async
   );
 
   const completed = await selectAgentOption(started.id, 'fullWasteSet');
-  assert.equal(completed.status, 'package_selected');
+  assert.equal(completed.status, 'awaiting_case_query');
   assert.equal(completed.packageCode, '115');
   assert.deepEqual(completed.documents, ['Инструкция', 'Разрешение на захоронение']);
   assert.equal(completed.availableOptions.length, 0);
-  assert.match(completed.history.at(-1).text, /код 115/);
+  assert.match(completed.history.at(-2).text, /код 115/);
+  assert.equal(completed.question, 'Укажите ОКВЭД или описание деятельности.');
 
   const stateResponse = await fetch(`${baseUrl}/api/agent/state/${started.id}`);
   assert.equal(stateResponse.status, 200);
@@ -166,6 +181,192 @@ test('Цэпик starts a project and follows the waste development tree', async
   assert.equal(projectsResponse.status, 200);
   const projects = await projectsResponse.json();
   assert.ok(projects.some((project) => project.id === started.id));
+});
+
+test('POST /api/agent/upload parses XLSX and stores extracted project data', async () => {
+  const started = await startAgentProject();
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['Наименование', 'Количество'],
+    ['отходы упаковки из картона', 12],
+  ]);
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Отходы');
+  const filePath = path.join(tempDir, 'wastes.xlsx');
+  XLSX.writeFile(workbook, filePath);
+
+  const response = await uploadAgentFile(
+    started.id,
+    filePath,
+    'wastes.xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+  assert.equal(response.status, 200);
+
+  const project = await response.json();
+  assert.equal(project.extractedData.fileContents.length, 1);
+  assert.equal(project.extractedData.fileContents[0].name, 'wastes.xlsx');
+  assert.equal(project.extractedData.fileContents[0].type, 'xlsx');
+  assert.match(project.extractedData.fileContents[0].text, /отходы упаковки из картона/);
+  assert.match(project.history.at(-1).text, /Файл обработан, извлечено \d+ символов/);
+  assert.equal(project.upload.message, `Файл обработан, извлечено ${project.upload.charCount} символов`);
+
+  const persisted = JSON.parse(await readFile(process.env.AGENT_PROJECTS_PATH, 'utf8'));
+  const persistedProject = persisted.projects.find((item) => item.id === started.id);
+  assert.equal(persistedProject.extractedData.fileContents[0].text, project.extractedData.fileContents[0].text);
+});
+
+test('Цэпик finds and applies a matching reference case by OKVED', async () => {
+  const project = await completeAgentPath(['waste', 'development', 'instruction']);
+  assert.equal(project.status, 'awaiting_case_query');
+  assert.equal(project.packageCode, '111');
+
+  const matched = await selectAgentOption(project.id, '47.19');
+  assert.equal(matched.status, 'awaiting_case_confirmation');
+  assert.equal(matched.pendingCaseId, 'case_trade_001');
+  assert.deepEqual(
+    matched.availableOptions.map((option) => option.key),
+    ['yes', 'no']
+  );
+  assert.match(matched.history.at(-1).text, /Торговое предприятие/);
+
+  const confirmed = await selectAgentOption(project.id, 'yes');
+  assert.equal(confirmed.status, 'package_selected');
+  assert.equal(confirmed.matchedCaseId, 'case_trade_001');
+  assert.deepEqual(confirmed.caseData.typicalWastes, [
+    'отходы упаковки из картона',
+    'мусор от бытовых помещений',
+    'ртутные лампы',
+  ]);
+  assert.equal(confirmed.extractedData.caseData.instructionSnippet, confirmed.caseData.instructionSnippet);
+  assert.equal(confirmed.generation.status, 'failed');
+  assert.match(confirmed.history.at(-1).text, /GEMINI_API_KEY/);
+});
+
+test('code111 generator creates a docs page from project sources', async () => {
+  let capturedPayload = null;
+  let savedSnapshot = null;
+  const result = await generateCode111(
+    {
+      id: 'project-111',
+      packageCode: '111',
+      packageTitle: 'Инструкция',
+      extractedData: {
+        businessActivity: '47.19',
+        caseData: {
+          instructionSnippet: 'Инструкция для торгового предприятия',
+        },
+        fileContents: [
+          {
+            name: 'source.docx',
+            type: 'docx',
+            text: 'Перечень отходов из файла',
+          },
+        ],
+      },
+    },
+    'Название организации: ООО Тест',
+    {
+      generateDraft: async (payload) => {
+        capturedPayload = payload;
+        return '# Инструкция\n\nСгенерированный документ';
+      },
+      readDocs: async () => ({
+        pages: [],
+        folders: [],
+        activePageId: null,
+      }),
+      writeDocs: async (snapshot) => {
+        savedSnapshot = snapshot;
+      },
+      now: () => 123,
+    }
+  );
+
+  assert.equal(result.documents[0].id, 'cepik-code111-project-111-123');
+  assert.match(capturedPayload.documentRequest, /код 111/);
+  assert.match(capturedPayload.sources, /Инструкция для торгового предприятия/);
+  assert.match(capturedPayload.sources, /Перечень отходов из файла/);
+  assert.match(capturedPayload.sources, /ООО Тест/);
+  assert.equal(savedSnapshot.activePageId, 'cepik-code111-project-111-123');
+  assert.equal(savedSnapshot.pages[0].content, '# Инструкция\n\nСгенерированный документ');
+});
+
+test('code111 generator creates a placeholder page when AI quota is exhausted', async () => {
+  let savedSnapshot = null;
+  const quotaError = new Error('You exceeded your current quota, please check your plan and billing details.');
+  quotaError.statusCode = 429;
+  quotaError.code = 'insufficient_quota';
+
+  const result = await generateCode111(
+    {
+      id: 'project-quota',
+      packageCode: '111',
+      packageTitle: 'Инструкция',
+      matchedCaseId: 'case_trade_001',
+      extractedData: {
+        businessActivity: '47.19',
+        fileContents: [
+          {
+            name: 'source.docx',
+            type: 'docx',
+            text: 'Перечень отходов из файла',
+          },
+        ],
+      },
+    },
+    '',
+    {
+      generateDraft: async () => {
+        throw quotaError;
+      },
+      readDocs: async () => ({
+        pages: [],
+        folders: [],
+        activePageId: null,
+      }),
+      writeDocs: async (snapshot) => {
+        savedSnapshot = snapshot;
+      },
+      now: () => 456,
+    }
+  );
+
+  assert.equal(result.documents[0].id, 'cepik-code111-project-quota-456');
+  assert.equal(savedSnapshot.activePageId, 'cepik-code111-project-quota-456');
+  assert.match(savedSnapshot.pages[0].content, /Документ не сгенерирован из-за лимита API/);
+  assert.match(savedSnapshot.pages[0].content, /case_trade_001/);
+  assert.match(savedSnapshot.pages[0].content, /source\.docx: 25 символов/);
+});
+
+test('code111 generator keeps non-quota AI errors as failures', async () => {
+  const authError = new Error('Invalid API key');
+  authError.statusCode = 401;
+
+  await assert.rejects(
+    () =>
+      generateCode111(
+        {
+          id: 'project-auth',
+          packageCode: '111',
+          packageTitle: 'Инструкция',
+          extractedData: {},
+        },
+        '',
+        {
+          generateDraft: async () => {
+            throw authError;
+          },
+          readDocs: async () => {
+            throw new Error('readDocs should not be called');
+          },
+          writeDocs: async () => {
+            throw new Error('writeDocs should not be called');
+          },
+          now: () => 789,
+        }
+      ),
+    /Invalid API key/
+  );
 });
 
 test('Цэпик validates answers and maps every package leaf to its code', async () => {
@@ -199,13 +400,13 @@ test('Цэпик validates answers and maps every package leaf to its code', asy
 
   for (const [answers, expectedCode] of cases) {
     const completed = await completeAgentPath(answers);
-    assert.equal(completed.status, 'package_selected');
+    assert.equal(completed.status, 'awaiting_case_query');
     assert.equal(completed.packageCode, expectedCode);
     assert.ok(completed.documents.length > 0);
   }
 });
 
-test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {
+test('POST /api/ai/eco-agent requires GEMINI_API_KEY', async () => {
   const response = await fetch(`${baseUrl}/api/ai/eco-agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -217,6 +418,6 @@ test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {
 
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), {
-    error: 'OPENAI_API_KEY не настроен на сервере',
+    error: 'GEMINI_API_KEY не настроен на сервере',
   });
 });
