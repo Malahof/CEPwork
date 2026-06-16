@@ -3,7 +3,7 @@ import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { generateWithGemini } from './ai/geminiClient.js';
+import { generateWithGeminiWithRetry } from './ai/geminiClient.js';
 import { defaultDocsSnapshot } from './defaultDocs.js';
 import { generate as generateCode111 } from './agent/generators/code111.js';
 import { createAgentRouter } from './routes/agent.js';
@@ -178,7 +178,7 @@ ${payload.corrections}`
 Источники информации:
 ${payload.sources}`;
 
-  return generateWithGemini(
+  return generateWithGeminiWithRetry(
     `Ты русскоязычный разработчик экологической документации. Пиши структурированный Markdown, уточняй недостающие исходные данные, не выдумывай числовые показатели и нормативные реквизиты без источников.
 
 Пользовательский запрос:
