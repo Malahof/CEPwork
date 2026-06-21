@@ -1,19 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bot, CheckCircle2, FolderClock, Play, RefreshCw, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, CheckCircle2, FolderClock, Paperclip, Play, RefreshCw, Send, Sparkles } from 'lucide-react';
 import {
   fetchAgentProjectState,
   fetchAgentProjects,
   selectAgentAnswer,
   startAgentProject,
+  uploadAgentFile,
 } from '../api/agentApi';
 import type { AgentProject } from '../types';
 
 export function ChatWizard() {
   const [project, setProject] = useState<AgentProject | null>(null);
   const [projects, setProjects] = useState<AgentProject[]>([]);
+  const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [isFileUploading, setIsFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messages = useMemo(
     () =>
@@ -51,13 +55,16 @@ export function ChatWizard() {
     };
   }, []);
 
+  function updateProjectList(updated: AgentProject) {
+    setProject(updated);
+    setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+  }
+
   async function handleStartProject() {
     setIsLoading(true);
     setError(null);
     try {
-      const started = await startAgentProject();
-      setProject(started);
-      setProjects((current) => [started, ...current.filter((item) => item.id !== started.id)]);
+      updateProjectList(await startAgentProject());
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось начать проект Цэпика');
     } finally {
@@ -83,15 +90,40 @@ export function ChatWizard() {
     setIsSelecting(true);
     setError(null);
     try {
-      const updated = await selectAgentAnswer(project.id, answer);
-      setProject(updated);
-      setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+      updateProjectList(await selectAgentAnswer(project.id, answer));
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
       setIsSelecting(false);
     }
   }
+
+  async function handleSend() {
+    const answer = inputText.trim();
+    if (!answer || !project || isSelecting || isFileUploading) return;
+
+    setInputText('');
+    await handleSelect(answer);
+  }
+
+  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !project) return;
+
+    setIsFileUploading(true);
+    setError(null);
+    try {
+      const result = await uploadAgentFile(project.id, file);
+      updateProjectList(result.project);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Не удалось обработать файл');
+    } finally {
+      setIsFileUploading(false);
+      event.target.value = '';
+    }
+  }
+
+  const isInputDisabled = !project || isLoading || isSelecting || isFileUploading;
 
   return (
     <aside className="eco-agent chat-wizard">
@@ -175,6 +207,8 @@ export function ChatWizard() {
             </div>
           </div>
         )}
+        {isSelecting && <div className="chat-status">Цэпик печатает...</div>}
+        {isFileUploading && <div className="chat-status">Загрузка файла...</div>}
       </div>
 
       {error && <div className="editor-error">{error}</div>}
@@ -189,7 +223,7 @@ export function ChatWizard() {
                   className="btn btn-secondary btn-sm chat-option"
                   key={option.key}
                   type="button"
-                  disabled={isSelecting}
+                  disabled={isSelecting || isFileUploading}
                   onClick={() => void handleSelect(option.key)}
                 >
                   {option.label}
@@ -199,11 +233,50 @@ export function ChatWizard() {
           </>
         ) : project?.status === 'package_selected' ? (
           <div className="chat-finished">
-            Пакет выбран. На следующем этапе Цэпик сможет принимать файлы и источники.
+            Пакет выбран. Прикрепите файл или отправьте источники сообщением.
           </div>
         ) : (
           <div className="chat-finished">Нажмите «Новый проект», чтобы начать диалог.</div>
         )}
+
+        <div className="chat-input-row">
+          <input
+            ref={fileInputRef}
+            className="chat-file-input"
+            type="file"
+            onChange={(event) => void handleFileUpload(event)}
+            accept=".docx,.xlsx,.pdf,.jpg,.jpeg,.png,.txt,.csv,.md"
+          />
+          <button
+            className="btn btn-secondary btn-sm chat-file-button"
+            type="button"
+            disabled={isInputDisabled}
+            onClick={() => fileInputRef.current?.click()}
+            title="Прикрепить файл"
+          >
+            <Paperclip size={16} />
+          </button>
+          <input
+            className="chat-text-input"
+            type="text"
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void handleSend();
+            }}
+            placeholder={project ? 'Введите сообщение или вариант ответа...' : 'Создайте или откройте проект'}
+            disabled={isInputDisabled}
+          />
+          <button
+            className="btn btn-primary btn-sm chat-send-button"
+            type="button"
+            disabled={isInputDisabled || !inputText.trim()}
+            onClick={() => void handleSend()}
+          >
+            <Send size={16} />
+            <span>Отправить</span>
+          </button>
+        </div>
       </div>
     </aside>
   );

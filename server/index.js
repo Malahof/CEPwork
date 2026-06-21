@@ -1,6 +1,8 @@
 import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { inflateRawSync } from 'node:zlib';
+import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
 import {
@@ -143,6 +145,176 @@ function optionalString(value, field) {
   return requireString(value, field);
 }
 
+async function parseMultipartFormData(req) {
+  const contentType = req.headers['content-type'] ?? '';
+  const boundaryMatch = contentType.match(/boundary=(?:(?:"([^"]+)")|([^;]+))/i);
+  if (!boundaryMatch) {
+    const error = new Error('Invalid multipart form data');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const body = await readRequestBuffer(req, 10 * 1024 * 1024);
+  const boundary = `--${boundaryMatch[1] ?? boundaryMatch[2]}`;
+  const fields = {};
+  const files = {};
+
+  for (const rawPart of body.toString('latin1').split(boundary)) {
+    let part = rawPart;
+    if (!part || part === '--' || part === '--\r\n') continue;
+    if (part.startsWith('\r\n')) part = part.slice(2);
+    if (part.endsWith('\r\n')) part = part.slice(0, -2);
+    if (part.endsWith('--')) part = part.slice(0, -2);
+
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+
+    const headerLines = part.slice(0, headerEnd).split('\r\n');
+    const headers = Object.fromEntries(
+      headerLines.map((line) => {
+        const separator = line.indexOf(':');
+        return [line.slice(0, separator).toLowerCase(), line.slice(separator + 1).trim()];
+      })
+    );
+    const disposition = parseContentDisposition(headers['content-disposition'] ?? '');
+    if (!disposition.name) continue;
+
+    const content = Buffer.from(part.slice(headerEnd + 4), 'latin1');
+    if (disposition.filename) {
+      files[disposition.name] = {
+        filename: path.basename(disposition.filename),
+        mimeType: headers['content-type'] ?? 'application/octet-stream',
+        buffer: content,
+      };
+    } else {
+      fields[disposition.name] = content.toString('utf8');
+    }
+  }
+
+  return { fields, files };
+}
+
+async function readRequestBuffer(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) {
+      const error = new Error('Uploaded file is too large');
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseContentDisposition(value) {
+  const result = {};
+  for (const part of value.split(';')) {
+    const [rawKey, ...rawValue] = part.trim().split('=');
+    if (!rawKey || rawValue.length === 0) continue;
+    result[rawKey] = rawValue.join('=').replace(/^"|"$/g, '');
+  }
+  return result;
+}
+
+function extractUploadedText(file) {
+  const extension = path.extname(file.filename).toLowerCase();
+  if (extension === '.xlsx' || extension === '.xls') return extractSpreadsheetText(file.buffer);
+  if (extension === '.docx') return extractDocxText(file.buffer);
+  if (extension === '.pdf') return extractPdfText(file.buffer);
+  if (['.txt', '.csv', '.md', '.json'].includes(extension) || file.mimeType.startsWith('text/')) {
+    return file.buffer.toString('utf8').trim();
+  }
+  return '';
+}
+
+function extractSpreadsheetText(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  return workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]))
+    .join('\n')
+    .trim();
+}
+
+function extractDocxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const names = [...entries.keys()].filter((name) => /^word\/(document|header|footer|footnotes|endnotes).*\.xml$/.test(name));
+  return names
+    .map((name) => extractOfficeXmlText(entries.get(name).toString('utf8')))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function readZipEntries(buffer) {
+  const entries = new Map();
+  const eocdOffset = findEndOfCentralDirectory(buffer);
+  if (eocdOffset === -1) return entries;
+
+  const totalEntries = buffer.readUInt16LE(eocdOffset + 10);
+  let centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (buffer.readUInt32LE(centralDirectoryOffset) !== 0x02014b50) break;
+
+    const compressionMethod = buffer.readUInt16LE(centralDirectoryOffset + 10);
+    const compressedSize = buffer.readUInt32LE(centralDirectoryOffset + 20);
+    const fileNameLength = buffer.readUInt16LE(centralDirectoryOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralDirectoryOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralDirectoryOffset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(centralDirectoryOffset + 42);
+    const fileNameStart = centralDirectoryOffset + 46;
+    const fileName = buffer.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
+
+    const localFileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+
+    if (compressionMethod === 0) entries.set(fileName, compressed);
+    if (compressionMethod === 8) entries.set(fileName, inflateRawSync(compressed));
+
+    centralDirectoryOffset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function findEndOfCentralDirectory(buffer) {
+  const minOffset = Math.max(0, buffer.length - 66000);
+  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) return offset;
+  }
+  return -1;
+}
+
+function extractOfficeXmlText(xml) {
+  return [...xml.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/g)]
+    .map((match) => decodeXmlEntities(match[1]))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function decodeXmlEntities(value) {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function extractPdfText(buffer) {
+  return [...buffer.toString('latin1').matchAll(/\(([^()]*)\)\s*Tj/g)]
+    .map((match) => match[1].replace(/\\([nrtbf()\\])/g, '$1'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function generateEcoDocumentWithOpenAi(payload) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -263,6 +435,57 @@ app.post('/api/agent/select', async (req, res, next) => {
     });
 
     res.json(serializeAgentProject(project));
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.post('/api/agent/upload', async (req, res, next) => {
+  try {
+    const { fields, files } = await parseMultipartFormData(req);
+    const projectId = requireString(fields.projectId, 'projectId');
+    const file = files.file;
+    if (!file) throw new Error('Uploaded file is required');
+
+    const text = extractUploadedText(file);
+    const charCount = [...text].length;
+    const now = Date.now();
+    const project = await updateAgentProjects(agentProjectsPath, (projects) => {
+      const found = projects.find((item) => item.id === projectId);
+      if (!found) {
+        const error = new Error('Agent project not found');
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const uploads = Array.isArray(found.extractedData.uploads) ? found.extractedData.uploads : [];
+      found.extractedData.uploads = [
+        ...uploads,
+        {
+          fileName: file.filename,
+          mimeType: file.mimeType,
+          charCount,
+          text,
+          uploadedAt: now,
+        },
+      ];
+      found.history.push({
+        id: `agent-${found.history.length + 1}`,
+        role: 'agent',
+        text: `Файл «${file.filename}» загружен, извлечено ${charCount} символов.`,
+        createdAt: now,
+      });
+      found.updatedAt = now;
+      return found;
+    });
+
+    res.json({
+      project: serializeAgentProject(project),
+      fileName: file.filename,
+      charCount,
+      text,
+    });
   } catch (error) {
     res.status(error.statusCode ?? 400);
     next(error);

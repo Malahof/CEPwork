@@ -168,6 +168,26 @@ test('Цэпик starts a project and follows the waste development tree', async
   assert.ok(projects.some((project) => project.id === started.id));
 });
 
+test('POST /api/agent/upload stores extracted text for a project', async () => {
+  const started = await startAgentProject();
+  const formData = new FormData();
+  formData.append('projectId', started.id);
+  formData.append('file', new Blob(['Источник по отходам'], { type: 'text/plain' }), 'source.txt');
+
+  const response = await fetch(`${baseUrl}/api/agent/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+  assert.equal(response.status, 200);
+
+  const upload = await response.json();
+  assert.equal(upload.fileName, 'source.txt');
+  assert.equal(upload.charCount, 'Источник по отходам'.length);
+  assert.equal(upload.text, 'Источник по отходам');
+  assert.match(upload.project.history.at(-1).text, /source\.txt/);
+  assert.equal(upload.project.extractedData.uploads[0].text, 'Источник по отходам');
+});
+
 test('Цэпик validates answers and maps every package leaf to its code', async () => {
   const started = await startAgentProject();
   const invalidResponse = await fetch(`${baseUrl}/api/agent/select`, {

@@ -203,16 +203,32 @@ export function createAgentProject(now = Date.now()) {
 }
 
 export function selectAgentAnswer(project, answer, now = Date.now()) {
+  const normalizedAnswer = answer.trim();
+
   if (project.status !== 'selecting' || !project.currentNode) {
-    const error = new Error('Project selection is already completed');
-    error.statusCode = 409;
-    throw error;
+    if (!normalizedAnswer) {
+      const error = new Error('Invalid agent answer');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    addUserMessage(project, normalizedAnswer, now);
+    project.extractedData.messages = [
+      ...(Array.isArray(project.extractedData.messages) ? project.extractedData.messages : []),
+      { text: normalizedAnswer, createdAt: now },
+    ];
+    project.updatedAt = now;
+    addAgentMessage(project, 'Сообщение принято. Цэпик сохранит его как источник для следующих этапов.', now);
+    return project;
   }
 
   const node = agentTree[project.currentNode];
   if (!node) throw new Error(`Unknown agent node: ${project.currentNode}`);
 
-  const option = node.options.find((item) => item.key === answer);
+  const normalizedLabel = normalizedAnswer.toLocaleLowerCase('ru-RU');
+  const option = node.options.find(
+    (item) => item.key === normalizedAnswer || item.label.toLocaleLowerCase('ru-RU') === normalizedLabel
+  );
   if (!option) {
     const error = new Error('Invalid agent answer');
     error.statusCode = 400;
