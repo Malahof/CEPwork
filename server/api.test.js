@@ -14,6 +14,9 @@ const { app } = await import('./index.js');
 let server;
 let baseUrl;
 
+const unsupportedDocumentationMessage =
+  'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
+
 before(() => {
   server = app.listen(0);
   const address = server.address();
@@ -126,6 +129,19 @@ async function completeAgentPath(answers) {
   return project;
 }
 
+async function captureConsoleLog(callback) {
+  const originalLog = console.log;
+  const logs = [];
+  console.log = (...args) => {
+    logs.push(args);
+  };
+  try {
+    return { result: await callback(), logs };
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 test('Цэпик starts a project and follows the waste development tree', async () => {
   const started = await startAgentProject();
   assert.equal(started.status, 'selecting');
@@ -150,17 +166,25 @@ test('Цэпик starts a project and follows the waste development tree', async
     ['instruction', 'inventoryAct', 'disposalPermit', 'simpleWasteSet', 'fullWasteSet']
   );
 
-  const completed = await selectAgentOption(started.id, 'fullWasteSet');
-  assert.equal(completed.status, 'package_selected');
-  assert.equal(completed.packageCode, '115');
-  assert.deepEqual(completed.documents, ['Инструкция', 'Разрешение на захоронение']);
-  assert.equal(completed.availableOptions.length, 0);
-  assert.match(completed.history.at(-1).text, /код 115/);
+  const { result: unsupported, logs } = await captureConsoleLog(() =>
+    selectAgentOption(started.id, 'instruction')
+  );
+  assert.equal(unsupported.status, 'selecting');
+  assert.equal(unsupported.currentNode, 'wasteDevelopmentPackage');
+  assert.equal(unsupported.packageCode, undefined);
+  assert.deepEqual(
+    unsupported.availableOptions.map((option) => option.key),
+    ['instruction', 'inventoryAct', 'disposalPermit', 'simpleWasteSet', 'fullWasteSet']
+  );
+  assert.equal(unsupported.history.at(-1).text, unsupportedDocumentationMessage);
+  assert.equal(logs[0][0], '[Цэпик] Запрошена нереализованная ветка');
+  assert.deepEqual(logs[0][1], { projectId: started.id, code: '111' });
 
   const stateResponse = await fetch(`${baseUrl}/api/agent/state/${started.id}`);
   assert.equal(stateResponse.status, 200);
   const state = await stateResponse.json();
-  assert.equal(state.packageTitle, 'Полный комплект');
+  assert.equal(state.currentNode, 'wasteDevelopmentPackage');
+  assert.equal(state.history.at(-1).text, unsupportedDocumentationMessage);
 
   const projectsResponse = await fetch(`${baseUrl}/api/agent/projects`);
   assert.equal(projectsResponse.status, 200);
@@ -188,15 +212,23 @@ test('POST /api/agent/upload stores extracted text for a project', async () => {
   assert.equal(upload.project.extractedData.uploads[0].text, 'Источник по отходам');
 });
 
-test('Цэпик validates answers and maps every package leaf to its code', async () => {
+test('Цэпик returns a Russian fallback and logs unimplemented package codes', async () => {
   const started = await startAgentProject();
-  const invalidResponse = await fetch(`${baseUrl}/api/agent/select`, {
+  const invalidTextResponse = await fetch(`${baseUrl}/api/agent/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projectId: started.id, answer: 'invalid' }),
   });
-  assert.equal(invalidResponse.status, 400);
-  assert.deepEqual(await invalidResponse.json(), { error: 'Invalid agent answer' });
+  assert.equal(invalidTextResponse.status, 400);
+  assert.deepEqual(await invalidTextResponse.json(), {
+    error: 'Пожалуйста, выберите один из предложенных вариантов.',
+  });
+
+  const { result: unknownCodeResponse, logs: unknownCodeLogs } = await captureConsoleLog(() =>
+    selectAgentOption(started.id, '999')
+  );
+  assert.equal(unknownCodeResponse.history.at(-1).text, unsupportedDocumentationMessage);
+  assert.deepEqual(unknownCodeLogs[0][1], { projectId: started.id, code: '999' });
 
   const cases = [
     [['waste', 'development', 'instruction'], '111'],
@@ -218,10 +250,11 @@ test('Цэпик validates answers and maps every package leaf to its code', asy
   ];
 
   for (const [answers, expectedCode] of cases) {
-    const completed = await completeAgentPath(answers);
-    assert.equal(completed.status, 'package_selected');
-    assert.equal(completed.packageCode, expectedCode);
-    assert.ok(completed.documents.length > 0);
+    const { result: project, logs } = await captureConsoleLog(() => completeAgentPath(answers));
+    assert.equal(project.status, 'selecting');
+    assert.equal(project.packageCode, undefined);
+    assert.equal(project.history.at(-1).text, unsupportedDocumentationMessage);
+    assert.deepEqual(logs.at(-1)[1], { projectId: project.id, code: expectedCode });
   }
 });
 

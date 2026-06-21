@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 const welcomeMessage = 'Цэпик ожидает ваших указаний для начала работы.';
+const unsupportedDocumentationMessage =
+  'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
+const packageGeneratorCodes = new Set();
 
 const packageDefinitions = {
   instruction: {
@@ -207,12 +210,19 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
 
   if (project.status !== 'selecting' || !project.currentNode) {
     if (!normalizedAnswer) {
-      const error = new Error('Invalid agent answer');
+      const error = new Error('Пожалуйста, выберите вариант ответа.');
       error.statusCode = 400;
       throw error;
     }
 
     addUserMessage(project, normalizedAnswer, now);
+    if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
+      logUnsupportedPackage(project, normalizedAnswer);
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      project.updatedAt = now;
+      return project;
+    }
+
     project.extractedData.messages = [
       ...(Array.isArray(project.extractedData.messages) ? project.extractedData.messages : []),
       { text: normalizedAnswer, createdAt: now },
@@ -223,14 +233,22 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
   }
 
   const node = agentTree[project.currentNode];
-  if (!node) throw new Error(`Unknown agent node: ${project.currentNode}`);
+  if (!node) throw new Error(`Неизвестный шаг Цэпика: ${project.currentNode}`);
 
   const normalizedLabel = normalizedAnswer.toLocaleLowerCase('ru-RU');
   const option = node.options.find(
     (item) => item.key === normalizedAnswer || item.label.toLocaleLowerCase('ru-RU') === normalizedLabel
   );
   if (!option) {
-    const error = new Error('Invalid agent answer');
+    if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
+      addUserMessage(project, normalizedAnswer, now);
+      logUnsupportedPackage(project, normalizedAnswer);
+      project.updatedAt = now;
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      return project;
+    }
+
+    const error = new Error('Пожалуйста, выберите один из предложенных вариантов.');
     error.statusCode = 400;
     throw error;
   }
@@ -244,7 +262,13 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
 
   if (option.packageKey) {
     const packageDefinition = packageDefinitions[option.packageKey];
-    if (!packageDefinition) throw new Error(`Unknown package key: ${option.packageKey}`);
+    if (!packageDefinition) throw new Error(`Неизвестный пакет документации: ${option.packageKey}`);
+
+    if (!hasPackageGenerator(packageDefinition.code)) {
+      logUnsupportedPackage(project, packageDefinition.code);
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      return project;
+    }
 
     project.status = 'package_selected';
     project.currentNode = null;
@@ -257,9 +281,24 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
 
   project.currentNode = option.nextNode;
   const nextNode = agentTree[project.currentNode];
-  if (!nextNode) throw new Error(`Unknown next node: ${project.currentNode}`);
+  if (!nextNode) throw new Error(`Неизвестный следующий шаг Цэпика: ${project.currentNode}`);
   addAgentMessage(project, nextNode.question, now);
   return project;
+}
+
+function isPackageCode(answer) {
+  return /^\d+$/.test(answer);
+}
+
+function hasPackageGenerator(code) {
+  return packageGeneratorCodes.has(code);
+}
+
+function logUnsupportedPackage(project, code) {
+  console.log('[Цэпик] Запрошена нереализованная ветка', {
+    projectId: project.id,
+    code,
+  });
 }
 
 export function serializeAgentProject(project) {

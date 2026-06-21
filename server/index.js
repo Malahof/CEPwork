@@ -149,7 +149,7 @@ async function parseMultipartFormData(req) {
   const contentType = req.headers['content-type'] ?? '';
   const boundaryMatch = contentType.match(/boundary=(?:(?:"([^"]+)")|([^;]+))/i);
   if (!boundaryMatch) {
-    const error = new Error('Invalid multipart form data');
+    const error = new Error('Некорректные данные формы загрузки');
     error.statusCode = 400;
     throw error;
   }
@@ -201,7 +201,7 @@ async function readRequestBuffer(req, limit) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
     if (size > limit) {
-      const error = new Error('Uploaded file is too large');
+      const error = new Error('Загружаемый файл слишком большой');
       error.statusCode = 413;
       throw error;
     }
@@ -419,7 +419,7 @@ app.post('/api/agent/start', async (_req, res, next) => {
 app.post('/api/agent/select', async (req, res, next) => {
   try {
     const body = req.body;
-    if (!isRecord(body)) throw new Error('Invalid agent selection');
+    if (!isRecord(body)) throw new Error('Некорректный запрос Цэпика');
 
     const projectId = requireString(body.projectId, 'projectId');
     const answer = requireString(body.answer, 'answer');
@@ -427,7 +427,7 @@ app.post('/api/agent/select', async (req, res, next) => {
     const project = await updateAgentProjects(agentProjectsPath, (projects) => {
       const found = projects.find((item) => item.id === projectId);
       if (!found) {
-        const error = new Error('Agent project not found');
+        const error = new Error('Проект Цэпика не найден');
         error.statusCode = 404;
         throw error;
       }
@@ -446,7 +446,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
     const { fields, files } = await parseMultipartFormData(req);
     const projectId = requireString(fields.projectId, 'projectId');
     const file = files.file;
-    if (!file) throw new Error('Uploaded file is required');
+    if (!file) throw new Error('Необходимо выбрать файл для загрузки');
 
     const text = extractUploadedText(file);
     const charCount = [...text].length;
@@ -454,7 +454,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
     const project = await updateAgentProjects(agentProjectsPath, (projects) => {
       const found = projects.find((item) => item.id === projectId);
       if (!found) {
-        const error = new Error('Agent project not found');
+        const error = new Error('Проект Цэпика не найден');
         error.statusCode = 404;
         throw error;
       }
@@ -506,7 +506,7 @@ app.get('/api/agent/state/:projectId', async (req, res, next) => {
     const project = projects.find((item) => item.id === req.params.projectId);
     if (!project) {
       res.status(404);
-      throw new Error('Agent project not found');
+      throw new Error('Проект Цэпика не найден');
     }
     res.json(serializeAgentProject(project));
   } catch (error) {
