@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Bot, CheckCircle2, FolderClock, Paperclip, Play, RefreshCw, Send, Sparkles } from 'lucide-react';
 import {
   fetchAgentProjectState,
@@ -8,6 +9,33 @@ import {
   uploadAgentFile,
 } from '../api/agentApi';
 import type { AgentProject } from '../types';
+
+function renderMessageText(text: string) {
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let match = linkPattern.exec(text);
+
+  while (match) {
+    const [fullMatch, label, href] = match;
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    parts.push(
+      <a
+        href={href}
+        key={`${href}-${match.index}`}
+        rel={href.startsWith('http') ? 'noreferrer' : undefined}
+        target={href.startsWith('http') ? '_blank' : undefined}
+      >
+        {label}
+      </a>
+    );
+    lastIndex = match.index + fullMatch.length;
+    match = linkPattern.exec(text);
+  }
+
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts.length ? parts : text;
+}
 
 export function ChatWizard() {
   const [project, setProject] = useState<AgentProject | null>(null);
@@ -195,7 +223,7 @@ export function ChatWizard() {
       <div className="eco-agent-messages">
         {messages.map((message) => (
           <div className={`eco-agent-message ${message.role}`} key={message.id}>
-            {message.text}
+            {renderMessageText(message.text)}
           </div>
         ))}
         {project?.status === 'package_selected' && (

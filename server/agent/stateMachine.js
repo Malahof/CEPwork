@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question } from './generators/code112.js';
 
 const welcomeMessage = 'Цэпик ожидает ваших указаний для начала работы.';
-const unsupportedDocumentationMessage =
-  'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
-const packageGeneratorCodes = new Set();
+const unsupportedDocumentationMessage = code112FallbackMessage;
+const packageGeneratorCodes = new Set(['112']);
 
 const packageDefinitions = {
   instruction: {
@@ -205,7 +205,7 @@ export function createAgentProject(now = Date.now()) {
   return project;
 }
 
-export function selectAgentAnswer(project, answer, now = Date.now()) {
+export async function selectAgentAnswer(project, answer, now = Date.now(), context = {}) {
   const normalizedAnswer = answer.trim();
 
   if (project.status !== 'selecting' || !project.currentNode) {
@@ -213,6 +213,10 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
       const error = new Error('Пожалуйста, выберите вариант ответа.');
       error.statusCode = 400;
       throw error;
+    }
+
+    if (project.packageCode === '112') {
+      return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir });
     }
 
     addUserMessage(project, normalizedAnswer, now);
@@ -276,6 +280,9 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
     project.packageTitle = packageDefinition.title;
     project.documents = packageDefinition.documents;
     addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+    if (packageDefinition.code === '112') {
+      return generateCode112(project, { now, outputDir: context.outputDir });
+    }
     return project;
   }
 
@@ -317,11 +324,13 @@ export function listOpenProjects(projects) {
 }
 
 function currentQuestion(project) {
+  if (project.packageCode === '112') return getCode112Question(project);
   if (project.status !== 'selecting' || !project.currentNode) return null;
   return agentTree[project.currentNode]?.question ?? null;
 }
 
 function currentOptions(project) {
+  if (project.packageCode === '112') return getCode112Options(project);
   if (project.status !== 'selecting' || !project.currentNode) return [];
   return (agentTree[project.currentNode]?.options ?? []).map(({ key, label }) => ({ key, label }));
 }

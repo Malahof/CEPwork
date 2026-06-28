@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
 process.env.AGENT_PROJECTS_PATH = path.join(tempDir, 'eco_projects.json');
+process.env.AGENT_OUTPUT_DIR = path.join(tempDir, 'agent-docs');
 process.env.OPENAI_API_KEY = '';
 
 const { app } = await import('./index.js');
@@ -166,26 +167,6 @@ test('Цэпик starts a project and follows the waste development tree', async
     ['instruction', 'inventoryAct', 'disposalPermit', 'simpleWasteSet', 'fullWasteSet']
   );
 
-  const { result: unsupported, logs } = await captureConsoleLog(() =>
-    selectAgentOption(started.id, 'instruction')
-  );
-  assert.equal(unsupported.status, 'selecting');
-  assert.equal(unsupported.currentNode, 'wasteDevelopmentPackage');
-  assert.equal(unsupported.packageCode, undefined);
-  assert.deepEqual(
-    unsupported.availableOptions.map((option) => option.key),
-    ['instruction', 'inventoryAct', 'disposalPermit', 'simpleWasteSet', 'fullWasteSet']
-  );
-  assert.equal(unsupported.history.at(-1).text, unsupportedDocumentationMessage);
-  assert.equal(logs[0][0], '[Цэпик] Запрошена нереализованная ветка');
-  assert.deepEqual(logs[0][1], { projectId: started.id, code: '111' });
-
-  const stateResponse = await fetch(`${baseUrl}/api/agent/state/${started.id}`);
-  assert.equal(stateResponse.status, 200);
-  const state = await stateResponse.json();
-  assert.equal(state.currentNode, 'wasteDevelopmentPackage');
-  assert.equal(state.history.at(-1).text, unsupportedDocumentationMessage);
-
   const projectsResponse = await fetch(`${baseUrl}/api/agent/projects`);
   assert.equal(projectsResponse.status, 200);
   const projects = await projectsResponse.json();
@@ -232,7 +213,6 @@ test('Цэпик returns a Russian fallback and logs unimplemented package codes
 
   const cases = [
     [['waste', 'development', 'instruction'], '111'],
-    [['waste', 'development', 'inventoryAct'], '112'],
     [['waste', 'development', 'disposalPermit'], '113'],
     [['waste', 'development', 'simpleWasteSet'], '114'],
     [['waste', 'development', 'fullWasteSet'], '115'],
@@ -256,6 +236,38 @@ test('Цэпик returns a Russian fallback and logs unimplemented package codes
     assert.equal(project.history.at(-1).text, unsupportedDocumentationMessage);
     assert.deepEqual(logs.at(-1)[1], { projectId: project.id, code: expectedCode });
   }
+});
+
+test('код 112 starts the inventory act generator and creates five DOCX files', async () => {
+  const started = await startAgentProject();
+  await selectAgentOption(started.id, 'waste');
+  await selectAgentOption(started.id, 'development');
+  const code112 = await selectAgentOption(started.id, 'inventoryAct');
+
+  assert.equal(code112.status, 'package_selected');
+  assert.equal(code112.packageCode, '112');
+  assert.equal(code112.question, 'К чему теперь приступить?');
+  assert.deepEqual(
+    code112.availableOptions.map((option) => option.key),
+    ['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures', 'generateAll', 'pause']
+  );
+  assert.match(code112.history.at(-1).text, /С чего хотите начать/);
+
+  const generated = await selectAgentOption(started.id, 'generateAll');
+  const files = generated.extractedData.code112.files;
+  assert.equal(generated.extractedData.code112.status, 'ready');
+  assert.equal(Object.values(files).filter((file) => file.status === 'ready').length, 5);
+  assert.match(generated.history.at(-2).text, /Сформированы файлы/);
+
+  const firstFile = files.titleAct;
+  const downloadResponse = await fetch(`${baseUrl}${firstFile.downloadUrl}`);
+  assert.equal(downloadResponse.status, 200);
+  const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+  assert.equal(buffer.subarray(0, 2).toString('utf8'), 'PK');
+
+  const { result: unknownCode, logs } = await captureConsoleLog(() => selectAgentOption(started.id, '999'));
+  assert.equal(unknownCode.history.at(-2).text, unsupportedDocumentationMessage);
+  assert.deepEqual(logs[0][1], { projectId: started.id, code: '999' });
 });
 
 test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {

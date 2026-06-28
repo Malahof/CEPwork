@@ -24,6 +24,9 @@ const dataDir = path.dirname(docsPath);
 const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
   ? path.resolve(process.env.AGENT_PROJECTS_PATH)
   : path.resolve(dataDir, 'eco_projects.json');
+const agentOutputDir = process.env.AGENT_OUTPUT_DIR
+  ? path.resolve(process.env.AGENT_OUTPUT_DIR)
+  : path.resolve(dataDir, 'agent-docs');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -431,7 +434,7 @@ app.post('/api/agent/select', async (req, res, next) => {
         error.statusCode = 404;
         throw error;
       }
-      return selectAgentAnswer(found, answer);
+      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir });
     });
 
     res.json(serializeAgentProject(project));
@@ -488,6 +491,37 @@ app.post('/api/agent/upload', async (req, res, next) => {
     });
   } catch (error) {
     res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+
+app.get('/api/agent/files/:projectId/:fileName', async (req, res, next) => {
+  try {
+    const projects = await readAgentProjects(agentProjectsPath);
+    const project = projects.find((item) => item.id === req.params.projectId);
+    if (!project) {
+      res.status(404);
+      throw new Error('Проект Цэпика не найден');
+    }
+
+    const files = project.extractedData?.code112?.files;
+    const requestedFileName = path.basename(req.params.fileName);
+    const file = files && Object.values(files).find((item) => item.fileName === requestedFileName);
+    if (!file || typeof file.path !== 'string') {
+      res.status(404);
+      throw new Error('Файл Цэпика не найден');
+    }
+
+    const resolvedPath = path.resolve(file.path);
+    const resolvedRoot = path.resolve(agentOutputDir);
+    if (!resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+      res.status(400);
+      throw new Error('Некорректный путь к файлу Цэпика');
+    }
+
+    res.download(resolvedPath, requestedFileName);
+  } catch (error) {
     next(error);
   }
 });
