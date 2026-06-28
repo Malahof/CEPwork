@@ -15,6 +15,14 @@ import {
   readAgentProjects,
   updateAgentProjects,
 } from './agent/storage.js';
+import {
+  buildMemorySystemPrompt,
+  deleteInstruction,
+  readUserMemory,
+  saveInstruction,
+  saveOrganization,
+  saveUserPreferences,
+} from './agent/memory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
@@ -27,6 +35,9 @@ const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
 const agentOutputDir = process.env.AGENT_OUTPUT_DIR
   ? path.resolve(process.env.AGENT_OUTPUT_DIR)
   : path.resolve(dataDir, 'agent-docs');
+const userMemoryPath = process.env.USER_MEMORY_PATH
+  ? path.resolve(process.env.USER_MEMORY_PATH)
+  : path.resolve(dataDir, 'user_memory.json');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -347,6 +358,7 @@ ${payload.corrections}`
 Источники информации:
 ${payload.sources}`;
 
+  const memoryContext = payload.memoryContext ? `\n\nДолговременная память Цэпика:\n${payload.memoryContext}` : '';
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -362,7 +374,8 @@ ${payload.sources}`;
           content:
             'Ты русскоязычный разработчик экологической документации. ' +
             'Пиши структурированный Markdown, уточняй недостающие исходные данные, ' +
-            'не выдумывай числовые показатели и нормативные реквизиты без источников.',
+            'не выдумывай числовые показатели и нормативные реквизиты без источников.' +
+            memoryContext,
         },
         {
           role: 'user',
@@ -406,9 +419,84 @@ app.post('/api/docs', async (req, res, next) => {
   }
 });
 
+app.get('/api/memory', async (req, res, next) => {
+  try {
+    const memory = await readUserMemory(userMemoryPath);
+    const section = typeof req.query.section === 'string' ? req.query.section : '';
+    if (section) {
+      if (!['userPreferences', 'organizations', 'savedInstructions'].includes(section)) {
+        res.status(400);
+        throw new Error('Неизвестный раздел памяти');
+      }
+      res.json(memory[section]);
+      return;
+    }
+    res.json(memory);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/memory/save', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Некорректный запрос памяти');
+
+    const result = {};
+    if (typeof body.text === 'string' && body.text.trim()) {
+      const saved = await saveInstruction(userMemoryPath, body.text);
+      result.instruction = saved.instruction;
+      result.created = saved.created;
+    }
+
+    const preferences = isRecord(body.userPreferences)
+      ? body.userPreferences
+      : isRecord(body.preferences)
+        ? body.preferences
+        : null;
+    if (preferences) {
+      const saved = await saveUserPreferences(userMemoryPath, preferences);
+      result.userPreferences = saved.userPreferences;
+    }
+
+    if (!Object.keys(result).length) throw new Error('Передайте text или userPreferences');
+    result.memory = await readUserMemory(userMemoryPath);
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.post('/api/memory/organization', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Некорректный запрос организации');
+    const organizationBody = isRecord(body.organization) ? body.organization : body;
+    const result = await saveOrganization(userMemoryPath, organizationBody);
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.delete('/api/memory/instruction/:id', async (req, res, next) => {
+  try {
+    const result = await deleteInstruction(userMemoryPath, req.params.id);
+    if (!result.deleted) {
+      res.status(404);
+      throw new Error('Инструкция не найдена');
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/agent/start', async (_req, res, next) => {
   try {
-    const project = createAgentProject();
+    const project = createAgentProject(Date.now(), await readUserMemory(userMemoryPath));
     await updateAgentProjects(agentProjectsPath, (projects) => {
       projects.push(project);
       return project;
@@ -434,7 +522,7 @@ app.post('/api/agent/select', async (req, res, next) => {
         error.statusCode = 404;
         throw error;
       }
-      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir });
+      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, memoryPath: userMemoryPath });
     });
 
     res.json(serializeAgentProject(project));
@@ -572,6 +660,7 @@ app.post('/api/ai/eco-agent', async (req, res, next) => {
         sources,
         draft,
         corrections,
+        memoryContext: buildMemorySystemPrompt(await readUserMemory(userMemoryPath)),
       }),
     });
   } catch (error) {

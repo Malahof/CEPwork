@@ -13,6 +13,7 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
+import { findOrganization } from '../memory.js';
 
 export const code112FallbackMessage =
   'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
@@ -119,7 +120,12 @@ export async function generate(projectData, userSources = {}) {
 
   if (normalizeAnswer(answer) === 'generateall' || normalizeAnswer(answer) === normalizeAnswer('Сгенерировать все')) {
     await generateDocuments(projectData, state, code112Documents, outputDir, now);
-    askUser(projectData, 'Все 5 документов по акту инвентаризации сформированы. К чему теперь приступить?', menuOptions(), now);
+    askUser(
+      projectData,
+      'Все 5 документов по акту инвентаризации сформированы. Если хотите сохранить данные как кейс, отправьте команду «Запомни организацию: [название], директор [ФИО], адрес [адрес]». К чему теперь приступить?',
+      menuOptions(),
+      now
+    );
     return projectData;
   }
 
@@ -129,6 +135,8 @@ export async function generate(projectData, userSources = {}) {
     state.wastes = mergeWastes(state.wastes, directWasteRows);
     projectData.updatedAt = now;
     addAgentMessage(projectData, buildSourceSavedMessage(parsedAnswer, directWasteRows), now);
+    const memoryMessage = applyOrganizationMemory(state, userSources.memory, answer);
+    if (memoryMessage) addAgentMessage(projectData, memoryMessage, now);
     askUser(projectData, 'К чему теперь приступить?', menuOptions(), now);
     return projectData;
   }
@@ -356,6 +364,36 @@ function buildSourceSavedMessage(parsedAnswer, directWasteRows) {
   if (fieldsCount) parts.push(`полей: ${fieldsCount}`);
   if (wastesCount) parts.push(`строк отходов: ${wastesCount}`);
   return `Данные сохранены для акта инвентаризации (${parts.join(', ')}).`;
+}
+
+function applyOrganizationMemory(state, memory, answer) {
+  if (!memory) return '';
+
+  const organization = findOrganization(memory, answer);
+  if (!organization) return '';
+
+  const applied = [];
+  state.data.Название_организации = state.data.Название_организации || organization.name;
+  if (organization.address && !state.data.Юридический_адрес) {
+    state.data.Юридический_адрес = organization.address;
+    applied.push('адрес');
+  }
+  if (organization.director && !state.data.Инициалы_фамилия_руководителя) {
+    state.data.Инициалы_фамилия_руководителя = organization.director;
+    applied.push('руководитель');
+  }
+  if (organization.okved && !state.data.ОКВЭД) {
+    state.data.ОКВЭД = organization.okved;
+    applied.push('ОКВЭД');
+  }
+  if (organization.typicalWastes.length && !state.data.Типовые_отходы) {
+    state.data.Типовые_отходы = organization.typicalWastes.join('; ');
+    applied.push('типовые отходы');
+  }
+
+  return applied.length
+    ? `Нашёл в памяти организацию «${organization.name}» и применил сохранённые данные: ${applied.join(', ')}.`
+    : `Нашёл в памяти организацию «${organization.name}». Сохранённые данные уже учтены в проекте.`;
 }
 
 function buildTemplateData(project, state) {

@@ -8,6 +8,7 @@ const tempDir = await mkdtemp(path.join(tmpdir(), 'cepwork-api-'));
 process.env.DOCS_DATA_PATH = path.join(tempDir, 'docs.json');
 process.env.AGENT_PROJECTS_PATH = path.join(tempDir, 'eco_projects.json');
 process.env.AGENT_OUTPUT_DIR = path.join(tempDir, 'agent-docs');
+process.env.USER_MEMORY_PATH = path.join(tempDir, 'user_memory.json');
 process.env.OPENAI_API_KEY = '';
 
 const { app } = await import('./index.js');
@@ -191,6 +192,116 @@ test('POST /api/agent/upload stores extracted text for a project', async () => {
   assert.equal(upload.text, 'Источник по отходам');
   assert.match(upload.project.history.at(-1).text, /source\.txt/);
   assert.equal(upload.project.extractedData.uploads[0].text, 'Источник по отходам');
+});
+
+test('memory API stores preferences, instructions, organizations and deletes instructions', async () => {
+  const emptyResponse = await fetch(`${baseUrl}/api/memory`);
+  assert.equal(emptyResponse.status, 200);
+  const emptyMemory = await emptyResponse.json();
+  assert.deepEqual(emptyMemory.savedInstructions, []);
+  assert.deepEqual(emptyMemory.organizations, []);
+  assert.deepEqual(emptyMemory.userPreferences.coefficients, {});
+
+  const saveResponse = await fetch(`${baseUrl}/api/memory/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: 'при расчёте отходов для торговли использовать коэффициент 0,7',
+      userPreferences: {
+        dateFormat: 'DD.MM.YYYY',
+        fonts: { default: 'Times New Roman' },
+        coefficients: { tradeWaste: 0.7 },
+      },
+    }),
+  });
+  assert.equal(saveResponse.status, 200);
+  const saved = await saveResponse.json();
+  assert.equal(saved.instruction.text, 'при расчёте отходов для торговли использовать коэффициент 0,7');
+  assert.equal(saved.userPreferences.coefficients.tradeWaste, 0.7);
+
+  const organizationResponse = await fetch(`${baseUrl}/api/memory/organization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'ООО Память',
+      director: 'Иванов И.И.',
+      address: 'г. Минск, ул. Памяти, 1',
+      okved: '47.11',
+      typicalWastes: ['Отходы упаковки'],
+    }),
+  });
+  assert.equal(organizationResponse.status, 200);
+  const savedOrganization = await organizationResponse.json();
+  assert.equal(savedOrganization.organization.name, 'ООО Память');
+
+  const sectionResponse = await fetch(`${baseUrl}/api/memory?section=organizations`);
+  assert.equal(sectionResponse.status, 200);
+  const organizations = await sectionResponse.json();
+  assert.equal(organizations[0].director, 'Иванов И.И.');
+
+  const deleteResponse = await fetch(`${baseUrl}/api/memory/instruction/${saved.instruction.id}`, {
+    method: 'DELETE',
+  });
+  assert.equal(deleteResponse.status, 200);
+  const deleted = await deleteResponse.json();
+  assert.equal(deleted.instruction.text, 'при расчёте отходов для торговли использовать коэффициент 0,7');
+});
+
+test('Цэпик saves memory commands and loads saved instructions in new projects', async () => {
+  const started = await startAgentProject();
+  const remembered = await selectAgentOption(
+    started.id,
+    'Запомни: при расчёте отходов для торговли использовать коэффициент 0,7'
+  );
+  assert.match(remembered.history.at(-1).text, /Запомнил инструкцию/);
+
+  const organization = await selectAgentOption(
+    started.id,
+    'Запомни организацию: ООО Ромашка, директор Петров П.П., адрес г. Минск, ул. Цветочная, 7'
+  );
+  assert.match(organization.history.at(-1).text, /Запомнил организацию: ООО Ромашка/);
+
+  const memoryList = await selectAgentOption(started.id, 'Покажи, что ты запомнил');
+  assert.match(memoryList.history.at(-1).text, /при расчёте отходов для торговли использовать коэффициент 0,7/);
+  assert.match(memoryList.history.at(-1).text, /ООО Ромашка/);
+
+  const newProject = await startAgentProject();
+  assert.match(newProject.systemPrompt, /при расчёте отходов для торговли использовать коэффициент 0,7/);
+  assert.ok(
+    newProject.history.some((message) =>
+      message.text.includes('Я загрузил долговременную память') &&
+      message.text.includes('при расчёте отходов для торговли использовать коэффициент 0,7')
+    )
+  );
+
+  const forgottenInstruction = await selectAgentOption(started.id, 'Забудь инструкцию 1');
+  assert.match(forgottenInstruction.history.at(-1).text, /Забыл инструкцию/);
+
+  const forgottenOrganization = await selectAgentOption(started.id, 'Забудь организацию ООО Ромашка');
+  assert.match(forgottenOrganization.history.at(-1).text, /Забыл организацию: ООО Ромашка/);
+});
+
+test('code112 applies saved organization data from memory', async () => {
+  const organizationResponse = await fetch(`${baseUrl}/api/memory/organization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'ООО Авто Память',
+      director: 'Смирнов С.С.',
+      address: 'г. Гродно, ул. Авто, 5',
+      okved: '45.20',
+      typicalWastes: ['Отработанные фильтры'],
+    }),
+  });
+  assert.equal(organizationResponse.status, 200);
+
+  const project = await completeAgentPath(['waste', 'development', 'inventoryAct']);
+  const updated = await selectAgentOption(project.id, 'Название организации: ООО Авто Память');
+  assert.ok(updated.history.some((message) => /Данные сохранены для акта инвентаризации/.test(message.text)));
+  assert.ok(updated.history.some((message) => /Нашёл в памяти организацию «ООО Авто Память»/.test(message.text)));
+  assert.equal(updated.extractedData.code112.data.Юридический_адрес, 'г. Гродно, ул. Авто, 5');
+  assert.equal(updated.extractedData.code112.data.Инициалы_фамилия_руководителя, 'Смирнов С.С.');
+  assert.equal(updated.extractedData.code112.data.ОКВЭД, '45.20');
 });
 
 test('Цэпик returns a Russian fallback and logs unimplemented package codes', async () => {
