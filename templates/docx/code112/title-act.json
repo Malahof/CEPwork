@@ -11,5 +11,14 @@
     "Должность_председателя",
     "Инициалы_фамилия_председателя",
     "Комиссия"
+  ],
+  "repeatingBlocks": [
+    {
+      "placeholder": "[блок_члена_комиссии]",
+      "dataPath": "commission",
+      "options": {
+        "blockType": "tableRow"
+      }
+    }
   ]
 }

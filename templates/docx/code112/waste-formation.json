@@ -1,5 +1,17 @@
 {
   "key": "wasteFormation",
   "title": "Сведения о количестве образующихся отходов",
-  "requiredFields": ["Отходы", "Количество_кг"]
+  "requiredFields": [
+    "Отходы",
+    "Количество_кг"
+  ],
+  "repeatingBlocks": [
+    {
+      "placeholder": "[строка_образования_отхода]",
+      "dataPath": "wastes",
+      "options": {
+        "blockType": "tableRow"
+      }
+    }
+  ]
 }

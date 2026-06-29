@@ -3,10 +3,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import JSZip from 'jszip';
 import {
   buildAppendixRows,
   createDocxFromTemplate,
   generate,
+  getCode112Options,
   parseCommission,
   parseManualInput,
   parseWasteRows,
@@ -101,3 +103,130 @@ test('code112 accepts manual source fields from the menu', async () => {
   assert.match(project.history.at(-2).text, /Данные сохранены для акта инвентаризации/);
   assert.doesNotMatch(project.history.at(-2).text, /не нашёл такой пункт/);
 });
+
+test('code112 confirms and applies saved organization data from memory', async () => {
+  const project = {
+    id: 'code112-memory-organization',
+    extractedData: {},
+    history: [],
+  };
+  const memory = {
+    userPreferences: {},
+    savedInstructions: [{ id: 'i1', text: 'при расчёте отходов использовать коэффициент 0,7', createdAt: 1 }],
+    organizations: [
+      {
+        id: 'org1',
+        name: 'ООО Ромашка',
+        address: 'г. Минск, ул. Центральная, 1',
+        director: 'И.И. Иванов',
+        okved: '47.11',
+        typicalWastes: ['9120400;Отходы производства, подобные коммунальным;не указан;0,054;т;захоронение;Офис;смешанное'],
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+  };
+
+  await generate(project, { now: 1, outputDir: tempDir, memory });
+  await generate(project, {
+    answer: 'Название организации: ООО Ромашка',
+    now: 2,
+    outputDir: tempDir,
+    memory,
+  });
+
+  assert.match(project.history.at(-1).text, /Найдены сохранённые данные для организации «ООО Ромашка»\. Использовать\?/);
+  assert.deepEqual(
+    getCode112Options(project).map((option) => option.label),
+    ['Да', 'Нет'],
+  );
+
+  await generate(project, {
+    answer: 'Да',
+    now: 3,
+    outputDir: tempDir,
+    memory,
+  });
+
+  assert.equal(project.extractedData.code112.data.Юридический_адрес, 'г. Минск, ул. Центральная, 1');
+  assert.equal(project.extractedData.code112.data.Инициалы_фамилия_руководителя, 'И.И. Иванов');
+  assert.equal(project.extractedData.code112.data.ОКВЭД, '47.11');
+  assert.ok(project.extractedData.code112.wastes.some((waste) => waste.code === '9120400'));
+  assert.match(project.extractedData.code112.memory.geminiSystemPrompt, /коэффициент 0,7/);
+});
+
+test('code112 uses default commission members and normalizes dates in DOCX', async () => {
+  const project = {
+    id: 'code112-memory-members',
+    packageTitle: 'Акт инвентаризации',
+    extractedData: {},
+    history: [],
+  };
+  const memory = {
+    userPreferences: {
+      dateFormat: 'DD.MM.YYYY',
+      defaultMembers: [
+        { position: 'Эколог', name: 'А.А. Альфов' },
+        { position: 'Инженер', name: 'Б.Б. Бетов' },
+      ],
+    },
+    organizations: [],
+    savedInstructions: [],
+  };
+
+  await generate(project, { now: 1, outputDir: tempDir, memory });
+  await generate(project, {
+    answer: [
+      'Название организации: ООО Дата',
+      'Дата акта: 25 апреля 2026',
+      'Дата начала: 2026-04-24',
+    ].join('\n'),
+    now: 2,
+    outputDir: tempDir,
+    memory,
+  });
+  await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, memory });
+
+  const xml = await readDocxDocumentXml(project.extractedData.code112.files.titleAct.path);
+  assert.match(xml, /25\.04\.2026/);
+  assert.match(xml, /24\.04\.2026/);
+  assert.match(xml, /А\.А\. Альфов/);
+  assert.match(xml, /Б\.Б\. Бетов/);
+  assert.equal(countOccurrences(xml, 'Член комиссии'), 2);
+});
+
+test('code112 renders exactly the entered commission member count', async () => {
+  for (const count of [2, 8]) {
+    const outputPath = path.join(tempDir, `members-${count}.docx`);
+    const members = Array.from({ length: count }, (_, index) => ({
+      position: `Должность ${index + 1}`,
+      name: `Участник ${index + 1}`,
+    }));
+
+    await createDocxFromTemplate(path.resolve('templates/docx/code112/title-act.json'), {
+      organizationName: 'ООО Комиссия',
+      legalAddress: 'г. Минск',
+      actDate: '25.04.2026',
+      startDate: '24.04.2026',
+      managerPosition: 'Директор',
+      managerName: 'И.И. Иванов',
+      chairPosition: 'Председатель комиссии',
+      chairName: 'П.П. Петров',
+      commission: members,
+      wastes: [],
+      appendixRows: [],
+    }, outputPath);
+
+    const xml = await readDocxDocumentXml(outputPath);
+    assert.equal(countOccurrences(xml, 'Член комиссии'), count);
+  }
+});
+
+async function readDocxDocumentXml(filePath) {
+  const zip = await JSZip.loadAsync(await readFile(filePath));
+  return zip.file('word/document.xml').async('string');
+}
+
+function countOccurrences(text, value) {
+  return (text.match(new RegExp(value, 'g')) ?? []).length;
+}

@@ -1,8 +1,9 @@
 {
   "userPreferences": {
-    "dateFormat": "",
+    "dateFormat": "DD.MM.YYYY",
     "fonts": {},
-    "coefficients": {}
+    "coefficients": {},
+    "defaultMembers": []
   },
   "organizations": [],
   "savedInstructions": []

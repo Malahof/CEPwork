@@ -13,7 +13,8 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
-import { findOrganization } from '../memory.js';
+import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../memory.js';
+import { parseDateToFormat, processRepeatingBlocks } from '../../utils/docxHelpers.js';
 
 export const code112FallbackMessage =
   'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
@@ -22,6 +23,8 @@ const FONT = 'Times New Roman';
 const DASH = '−';
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const DEFAULT_OUTPUT_DIR = path.resolve(process.cwd(), 'data', 'agent-docs');
+const DEFAULT_MEMORY_PATH = path.resolve(process.cwd(), 'data', 'user_memory.json');
+const DEFAULT_DATE_FORMAT = 'DD.MM.YYYY';
 const TEMPLATE_DIR = path.resolve(process.cwd(), 'templates', 'docx', 'code112');
 
 export const code112Documents = [
@@ -80,12 +83,15 @@ export async function generate(projectData, userSources = {}) {
   const state = ensureGeneratorState(projectData, now);
   const answer = typeof userSources.answer === 'string' ? userSources.answer.trim() : '';
   const outputDir = userSources.outputDir ?? DEFAULT_OUTPUT_DIR;
+  const memory = await resolveCode112Memory(userSources);
+  const memoryMessages = applyMemoryDefaults(projectData, state, memory);
 
   mergeCollectedData(projectData, state, userSources);
 
   if (!state.startedAt) {
     state.startedAt = now;
     addAgentMessage(projectData, buildStartMessage(state), now);
+    for (const message of memoryMessages) addAgentMessage(projectData, message, now);
     askUser(projectData, 'С чего хотите начать?', menuOptions(), now);
     return projectData;
   }
@@ -96,6 +102,15 @@ export async function generate(projectData, userSources = {}) {
   }
 
   addUserMessage(projectData, answer, now);
+
+  const organizationConfirmation = handleOrganizationConfirmation(projectData, state, answer, memory, now);
+  if (organizationConfirmation) return organizationConfirmation;
+
+  const organizationQuestion = state.activeDocument ? prepareOrganizationMemoryConfirmation(state, memory, answer) : '';
+  if (organizationQuestion) {
+    askUser(projectData, organizationQuestion, confirmationOptions(), now);
+    return projectData;
+  }
 
   if (isStopAnswer(answer)) {
     state.activeDocument = null;
@@ -135,9 +150,12 @@ export async function generate(projectData, userSources = {}) {
     state.wastes = mergeWastes(state.wastes, directWasteRows);
     projectData.updatedAt = now;
     addAgentMessage(projectData, buildSourceSavedMessage(parsedAnswer, directWasteRows), now);
-    const memoryMessage = applyOrganizationMemory(state, userSources.memory, answer);
-    if (memoryMessage) addAgentMessage(projectData, memoryMessage, now);
-    askUser(projectData, 'К чему теперь приступить?', menuOptions(), now);
+    const memoryQuestion = prepareOrganizationMemoryConfirmation(state, memory, answer);
+    if (memoryQuestion) {
+      askUser(projectData, memoryQuestion, confirmationOptions(), now);
+    } else {
+      askUser(projectData, 'К чему теперь приступить?', menuOptions(), now);
+    }
     return projectData;
   }
 
@@ -165,6 +183,7 @@ export function getCode112Question(project) {
 export function getCode112Options(project) {
   const state = project.extractedData?.code112;
   if (!state) return [];
+  if (state.memory?.pendingOrganization) return confirmationOptions();
   if (state.activeDocument) return documentWorkOptions();
   return menuOptions();
 }
@@ -231,10 +250,36 @@ export function sumHazardTotals(wastes) {
 export async function createDocxFromTemplate(templatePath, data, outputPath) {
   const template = JSON.parse(await readFile(templatePath, 'utf8'));
   const document = buildDocxDocument(template, data);
-  const buffer = await Packer.toBuffer(document);
+  let buffer = await Packer.toBuffer(document);
+  buffer = await applyTemplateRepeatingBlocks(buffer, template, data);
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, buffer);
   return { path: outputPath, contentType: DOCX_CONTENT_TYPE };
+}
+
+async function applyTemplateRepeatingBlocks(buffer, template, data) {
+  if (!Array.isArray(template.repeatingBlocks)) return buffer;
+  let processed = buffer;
+  for (const block of template.repeatingBlocks) {
+    if (!block || typeof block.placeholder !== 'string') continue;
+    processed = await processRepeatingBlocks(processed, block.placeholder, readTemplateDataArray(data, block.dataPath), block.options ?? {});
+  }
+  return processed;
+}
+
+function readTemplateDataArray(data, dataPath) {
+  const value = String(dataPath ?? '')
+    .split('.')
+    .filter(Boolean)
+    .reduce((current, key) => (current && typeof current === 'object' ? current[key] : undefined), data);
+  return Array.isArray(value) ? value : [];
+}
+
+async function resolveCode112Memory(userSources) {
+  if (userSources.memory !== undefined) return userSources.memory;
+  const memoryPath = userSources.memoryPath ?? process.env.USER_MEMORY_PATH ?? (userSources.loadDefaultMemory ? DEFAULT_MEMORY_PATH : '');
+  if (!memoryPath) return null;
+  return readUserMemory(memoryPath);
 }
 
 function ensureGeneratorState(project, now) {
@@ -247,6 +292,15 @@ function ensureGeneratorState(project, now) {
       activeDocument: null,
       data: {},
       wastes: [],
+      memory: {
+        dateFormat: DEFAULT_DATE_FORMAT,
+        pendingOrganization: null,
+        appliedOrganizations: [],
+        skippedOrganizations: [],
+        defaultMembersApplied: false,
+        savedInstructions: [],
+        geminiSystemPrompt: '',
+      },
       files: Object.fromEntries(
         code112Documents.map((document) => [
           document.key,
@@ -366,12 +420,125 @@ function buildSourceSavedMessage(parsedAnswer, directWasteRows) {
   return `Данные сохранены для акта инвентаризации (${parts.join(', ')}).`;
 }
 
-function applyOrganizationMemory(state, memory, answer) {
+function ensureMemoryState(state) {
+  state.memory = state.memory && typeof state.memory === 'object' ? state.memory : {};
+  state.memory.dateFormat = normalizeCode112DateFormat(state.memory.dateFormat);
+  state.memory.pendingOrganization = state.memory.pendingOrganization ?? null;
+  state.memory.appliedOrganizations = Array.isArray(state.memory.appliedOrganizations) ? state.memory.appliedOrganizations : [];
+  state.memory.skippedOrganizations = Array.isArray(state.memory.skippedOrganizations) ? state.memory.skippedOrganizations : [];
+  state.memory.defaultMembersApplied = Boolean(state.memory.defaultMembersApplied);
+  state.memory.savedInstructions = Array.isArray(state.memory.savedInstructions) ? state.memory.savedInstructions : [];
+  state.memory.geminiSystemPrompt = typeof state.memory.geminiSystemPrompt === 'string' ? state.memory.geminiSystemPrompt : '';
+}
+
+function normalizeCode112DateFormat(format) {
+  return format ? String(format) : DEFAULT_DATE_FORMAT;
+}
+
+function normalizeDefaultMembers(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((member) => {
+      if (typeof member === 'string') return parseCommissionMember(member);
+      if (member && typeof member === 'object') {
+        return {
+          position: String(member.position ?? member.должность ?? member.role ?? 'Член комиссии').trim(),
+          name: String(member.name ?? member.фио ?? member.fullName ?? 'И.О. Фамилия').trim(),
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function applyMemoryDefaults(project, state, memory) {
+  ensureMemoryState(state);
+  if (!memory) return [];
+
+  const messages = [];
+  const preferences = memory.userPreferences && typeof memory.userPreferences === 'object' ? memory.userPreferences : {};
+  state.memory.dateFormat = normalizeCode112DateFormat(preferences.dateFormat);
+  state.memory.savedInstructions = Array.isArray(memory.savedInstructions)
+    ? memory.savedInstructions.map((instruction) => instruction.text).filter(Boolean)
+    : [];
+  state.memory.geminiSystemPrompt = buildMemorySystemPrompt(memory);
+  if (state.memory.geminiSystemPrompt && !String(project.systemPrompt ?? '').includes(state.memory.geminiSystemPrompt)) {
+    project.systemPrompt = [project.systemPrompt, state.memory.geminiSystemPrompt].filter(Boolean).join('\n\n');
+  }
+
+  const defaultMembers = normalizeDefaultMembers(preferences.defaultMembers);
+  if (defaultMembers.length && !state.data.Комиссия && !state.memory.defaultMembersApplied) {
+    state.data.Комиссия = defaultMembers.map((member) => `${member.position} - ${member.name}`).join('\n');
+    state.memory.defaultMembersApplied = true;
+    messages.push(
+      [
+        'В памяти найдены типовые члены комиссии. Использую их по умолчанию:',
+        ...defaultMembers.map((member) => `• ${member.position} — ${member.name}`),
+        'Чтобы изменить состав, отправьте «Комиссия: должность - ФИО; должность - ФИО».',
+      ].join('\n')
+    );
+  }
+
+  if (state.memory.savedInstructions.length && !state.memory.instructionsNoticeShown) {
+    state.memory.instructionsNoticeShown = true;
+    messages.push('Сохранённые инструкции пользователя добавлены в контекст code112 для последующих расчётов и генерации.');
+  }
+
+  return messages;
+}
+
+function prepareOrganizationMemoryConfirmation(state, memory, answer) {
   if (!memory) return '';
+  ensureMemoryState(state);
+  if (state.memory.pendingOrganization) return '';
 
-  const organization = findOrganization(memory, answer);
+  const organization = findOrganization(memory, answer || state.data.Название_организации || '');
   if (!organization) return '';
+  if (state.memory.appliedOrganizations.includes(organization.id) || state.memory.skippedOrganizations.includes(organization.id)) return '';
 
+  state.memory.pendingOrganization = { id: organization.id, name: organization.name };
+  return `Найдены сохранённые данные для организации «${organization.name}». Использовать?`;
+}
+
+function handleOrganizationConfirmation(project, state, answer, memory, now) {
+  ensureMemoryState(state);
+  if (!state.memory.pendingOrganization) return null;
+
+  const normalized = normalizeAnswer(answer);
+  const pending = state.memory.pendingOrganization;
+  if (!isYesAnswer(normalized) && !isNoAnswer(normalized)) {
+    askUser(project, `Найдены сохранённые данные для организации «${pending.name}». Использовать?`, confirmationOptions(), now);
+    return project;
+  }
+
+  const organization = findOrganization(memory, pending.name);
+  state.memory.pendingOrganization = null;
+  if (!organization) {
+    askUser(project, 'Сохранённые данные организации не найдены. К чему теперь приступить?', menuOptions(), now);
+    return project;
+  }
+
+  if (isNoAnswer(normalized)) {
+    state.memory.skippedOrganizations.push(organization.id);
+    askUser(project, 'Хорошо, сохранённые данные организации не использую. К чему теперь приступить?', menuOptions(), now);
+    return project;
+  }
+
+  const applied = applyOrganizationToState(state, organization);
+  state.memory.appliedOrganizations.push(organization.id);
+  addAgentMessage(
+    project,
+    applied.length
+      ? `Применил сохранённые данные организации «${organization.name}»: ${applied.join(', ')}.`
+      : `Сохранённые данные организации «${organization.name}» уже были заполнены в проекте.`,
+    now
+  );
+  askUser(project, 'К чему теперь приступить?', menuOptions(), now);
+  project.updatedAt = now;
+  return project;
+}
+
+function applyOrganizationToState(state, organization) {
   const applied = [];
   state.data.Название_организации = state.data.Название_организации || organization.name;
   if (organization.address && !state.data.Юридический_адрес) {
@@ -386,30 +553,32 @@ function applyOrganizationMemory(state, memory, answer) {
     state.data.ОКВЭД = organization.okved;
     applied.push('ОКВЭД');
   }
-  if (organization.typicalWastes.length && !state.data.Типовые_отходы) {
+  if (organization.typicalWastes?.length && !state.data.Типовые_отходы) {
     state.data.Типовые_отходы = organization.typicalWastes.join('; ');
+    const parsedWastes = parseWasteRows(organization.typicalWastes.join('\n'));
+    if (parsedWastes.length) state.wastes = mergeWastes(state.wastes, parsedWastes);
     applied.push('типовые отходы');
   }
-
-  return applied.length
-    ? `Нашёл в памяти организацию «${organization.name}» и применил сохранённые данные: ${applied.join(', ')}.`
-    : `Нашёл в памяти организацию «${organization.name}». Сохранённые данные уже учтены в проекте.`;
+  return applied;
 }
 
 function buildTemplateData(project, state) {
   const commissionData = resolveCommissionData(state.data);
+  const dateFormat = state.memory?.dateFormat ?? DEFAULT_DATE_FORMAT;
   const data = {
     organizationName: state.data.Название_организации ?? 'Название организации не указано',
     projectName: project.packageTitle ?? 'Акт инвентаризации',
     managerPosition: state.data.Должность_руководителя ?? 'Должность руководителя не указана',
     managerName: state.data.Инициалы_фамилия_руководителя ?? 'И.О. Фамилия',
     legalAddress: state.data.Юридический_адрес ?? 'Юридический адрес не указан',
-    actDate: state.data.Дата_акта ?? new Date().toLocaleDateString('ru-RU'),
-    startDate: state.data.Дата_начала ?? new Date().toLocaleDateString('ru-RU'),
+    actDate: parseDateToFormat(state.data.Дата_акта ?? new Date(), dateFormat),
+    startDate: parseDateToFormat(state.data.Дата_начала ?? new Date(), dateFormat),
     chairPosition: commissionData.chairPosition,
     chairName: commissionData.chairName,
     commission: commissionData.members,
     wastes: state.wastes.length ? state.wastes : defaultWastes(),
+    savedInstructions: state.memory?.savedInstructions ?? [],
+    geminiSystemPrompt: state.memory?.geminiSystemPrompt ?? '',
   };
   data.appendixRows = buildAppendixRows(data.wastes);
   return data;
@@ -440,6 +609,13 @@ function documentWorkOptions() {
   ];
 }
 
+function confirmationOptions() {
+  return [
+    { key: 'yes', label: 'Да' },
+    { key: 'no', label: 'Нет' },
+  ];
+}
+
 function findDocument(answer) {
   return documentByKey.get(answer) ?? documentByLabel.get(normalizeAnswer(answer));
 }
@@ -451,6 +627,14 @@ function isStopAnswer(answer) {
 
 function normalizeAnswer(value) {
   return String(value).trim().toLocaleLowerCase('ru-RU');
+}
+
+function isYesAnswer(normalizedAnswer) {
+  return ['yes', 'да', 'использовать', 'ок', 'хорошо'].includes(normalizedAnswer);
+}
+
+function isNoAnswer(normalizedAnswer) {
+  return ['no', 'нет', 'не использовать'].includes(normalizedAnswer);
 }
 
 function statusLabel(status) {

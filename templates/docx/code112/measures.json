@@ -1,5 +1,17 @@
 {
   "key": "measures",
   "title": "Перечень мероприятий",
-  "requiredFields": ["Должность_председателя", "Инициалы_фамилия_председателя"]
+  "requiredFields": [
+    "Должность_председателя",
+    "Инициалы_фамилия_председателя"
+  ],
+  "repeatingBlocks": [
+    {
+      "placeholder": "[строка_мероприятия]",
+      "dataPath": "measures",
+      "options": {
+        "blockType": "tableRow"
+      }
+    }
+  ]
 }

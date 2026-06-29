@@ -298,10 +298,13 @@ test('code112 applies saved organization data from memory', async () => {
   const project = await completeAgentPath(['waste', 'development', 'inventoryAct']);
   const updated = await selectAgentOption(project.id, 'Название организации: ООО Авто Память');
   assert.ok(updated.history.some((message) => /Данные сохранены для акта инвентаризации/.test(message.text)));
-  assert.ok(updated.history.some((message) => /Нашёл в памяти организацию «ООО Авто Память»/.test(message.text)));
-  assert.equal(updated.extractedData.code112.data.Юридический_адрес, 'г. Гродно, ул. Авто, 5');
-  assert.equal(updated.extractedData.code112.data.Инициалы_фамилия_руководителя, 'Смирнов С.С.');
-  assert.equal(updated.extractedData.code112.data.ОКВЭД, '45.20');
+  assert.ok(updated.history.some((message) => /Найдены сохранённые данные для организации «ООО Авто Память»\. Использовать\?/.test(message.text)));
+
+  const confirmed = await selectAgentOption(project.id, 'Да');
+  assert.ok(confirmed.history.some((message) => /Применил сохранённые данные организации «ООО Авто Память»/.test(message.text)));
+  assert.equal(confirmed.extractedData.code112.data.Юридический_адрес, 'г. Гродно, ул. Авто, 5');
+  assert.equal(confirmed.extractedData.code112.data.Инициалы_фамилия_руководителя, 'Смирнов С.С.');
+  assert.equal(confirmed.extractedData.code112.data.ОКВЭД, '45.20');
 });
 
 test('Цэпик returns a Russian fallback and logs unimplemented package codes', async () => {
