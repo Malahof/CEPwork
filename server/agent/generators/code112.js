@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   AlignmentType,
   Document,
@@ -13,8 +14,9 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
+import JSZip from 'jszip';
 import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../memory.js';
-import { parseDateToFormat, processRepeatingBlocks } from '../../utils/docxHelpers.js';
+import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 
 export const code112FallbackMessage =
   'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
@@ -22,17 +24,18 @@ export const code112FallbackMessage =
 const FONT = 'Times New Roman';
 const DASH = '−';
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-const DEFAULT_OUTPUT_DIR = path.resolve(process.cwd(), 'data', 'agent-docs');
-const DEFAULT_MEMORY_PATH = path.resolve(process.cwd(), 'data', 'user_memory.json');
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const DEFAULT_OUTPUT_DIR = path.join(PROJECT_ROOT, 'data', 'agent-docs');
+const DEFAULT_MEMORY_PATH = path.join(PROJECT_ROOT, 'data', 'user_memory.json');
 const DEFAULT_DATE_FORMAT = 'DD.MM.YYYY';
-const TEMPLATE_DIR = path.resolve(process.cwd(), 'templates', 'docx', 'code112');
+const TEMPLATE_DIR = path.join(PROJECT_ROOT, 'templates', 'docx', 'inventory_act');
 
 export const code112Documents = [
   {
     key: 'titleAct',
     label: 'Титул акта инвентаризации',
     fileName: '01-titul-akta-inventarizatsii.docx',
-    template: 'title-act.json',
+    template: 'title_page_template.docx',
     requiredFields: [
       'Название_организации',
       'Должность_руководителя',
@@ -49,28 +52,28 @@ export const code112Documents = [
     key: 'appendix',
     label: 'Приложение к акту инвентаризации',
     fileName: '02-prilozhenie-k-aktu-inventarizatsii.docx',
-    template: 'appendix.json',
+    template: 'appendix_template.docx',
     requiredFields: ['Дата_акта', 'Название_организации', 'Отходы'],
   },
   {
     key: 'sources',
     label: 'Источники образования отходов производства',
     fileName: '03-istochniki-obrazovaniya-otkhodov.docx',
-    template: 'sources.json',
+    template: 'sources_template.docx',
     requiredFields: ['Название_организации', 'Отходы', 'Источники_образования'],
   },
   {
     key: 'wasteFormation',
     label: 'Сведения о количестве образующихся отходов',
     fileName: '04-obrazovanie-otkhodov.docx',
-    template: 'waste-formation.json',
+    template: 'waste_generation_template.docx',
     requiredFields: ['Отходы', 'Количество_кг'],
   },
   {
     key: 'measures',
     label: 'Перечень мероприятий',
     fileName: '05-perechen-meropriyatiy.docx',
-    template: 'measures.json',
+    template: 'measures_template.docx',
     requiredFields: ['Должность_председателя', 'Инициалы_фамилия_председателя'],
   },
 ];
@@ -248,6 +251,14 @@ export function sumHazardTotals(wastes) {
 }
 
 export async function createDocxFromTemplate(templatePath, data, outputPath) {
+  if (templatePath.endsWith('.docx')) {
+    let buffer = await readFile(templatePath);
+    buffer = await applyInventoryDocxTemplate(buffer, path.basename(templatePath), data);
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, buffer);
+    return { path: outputPath, contentType: DOCX_CONTENT_TYPE };
+  }
+
   const template = JSON.parse(await readFile(templatePath, 'utf8'));
   const document = buildDocxDocument(template, data);
   let buffer = await Packer.toBuffer(document);
@@ -255,6 +266,226 @@ export async function createDocxFromTemplate(templatePath, data, outputPath) {
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, buffer);
   return { path: outputPath, contentType: DOCX_CONTENT_TYPE };
+}
+
+async function applyInventoryDocxTemplate(buffer, templateName, data) {
+  let processed = buffer;
+  if (templateName === 'title_page_template.docx') {
+    processed = await processRepeatingBlocks(processed, '[должность_члена_комиссии]', titleCommissionRows(data), {
+      blockType: 'tableRow',
+      followingBlocks: 1,
+      removePlaceholder: false,
+    });
+  } else if (templateName === 'appendix_template.docx') {
+    processed = await processAppendixTemplateRows(processed, data);
+  } else if (templateName === 'sources_template.docx') {
+    processed = await processRepeatingBlocks(processed, '[номер_источника]', sourceRows(data), {
+      blockType: 'tableRow',
+      removePlaceholder: false,
+    });
+  } else if (templateName === 'waste_generation_template.docx') {
+    processed = await processRepeatingBlocks(processed, '[код]', wasteGenerationRows(data), {
+      blockType: 'tableRow',
+      removePlaceholder: false,
+    });
+  }
+
+  return replaceDocxPlaceholders(processed, templateVariables(data));
+}
+
+async function processAppendixTemplateRows(buffer, data) {
+  const zip = await JSZip.loadAsync(buffer);
+  const documentFile = zip.file('word/document.xml');
+  if (!documentFile) throw new Error('DOCX XML not found: word/document.xml');
+
+  const xml = await documentFile.async('string');
+  const rows = [...xml.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)].map((match, index) => ({
+    text: match[0],
+    index: match.index,
+    rowIndex: index,
+    visibleText: extractDocxText(match[0]),
+  }));
+  const wasteRows = rows.filter((row) => row.visibleText.includes('[код]') && row.visibleText.includes('[кол_заготовка]'));
+  if (!wasteRows.length) return buffer;
+
+  const sections = wasteRows
+    .map((wasteRow) => {
+      const totalRow = rows[wasteRow.rowIndex + 1];
+      if (!totalRow?.visibleText.includes('Итого')) return null;
+      return {
+        group: appendixGroupFromLabel(totalRow.visibleText),
+        wasteTemplate: wasteRow.text,
+        totalTemplate: totalRow.text,
+        start: wasteRow.index,
+        end: totalRow.index + totalRow.text.length,
+      };
+    })
+    .filter(Boolean);
+  if (!sections.length) return buffer;
+
+  const grouped = groupWastesByHazard(data.wastes);
+  const rendered = sections
+    .map((section) => {
+      const wastes = grouped.get(section.group) ?? [];
+      const wasteRowsXml = wastes
+        .map((waste) => replaceXmlPlaceholders(section.wasteTemplate, appendixWasteVariables(waste)))
+        .join('');
+      const totalRowXml = replaceXmlPlaceholders(section.totalTemplate, appendixTotalVariables(wastes));
+      return `${wasteRowsXml}${totalRowXml}`;
+    })
+    .join('');
+
+  const first = sections[0];
+  const last = sections.at(-1);
+  zip.file('word/document.xml', `${xml.slice(0, first.start)}${rendered}${xml.slice(last.end)}`);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+function templateVariables(data) {
+  return {
+    название_организации: data.organizationName,
+    должность_руководителя: data.managerPosition,
+    инициалы_фамилия_руководителя: data.managerName,
+    юридический_адрес: data.legalAddress,
+    дата_акта: data.actDate,
+    дата_начала: data.startDate,
+    должность_председателя: data.chairPosition,
+    инициалы_фамилия_председателя: data.chairName,
+  };
+}
+
+function titleCommissionRows(data) {
+  return data.commission.map((member) => ({
+    должность_члена_комиссии: member.position,
+    инициалы_фамилия_члена_комиссии: member.name,
+    дата_акта: data.actDate,
+  }));
+}
+
+function sourceRows(data) {
+  return data.wastes.map((waste, index) => ({
+    номер_источника: String(index + 1),
+    источник: waste.source || 'Источник не указан',
+    участок: waste.source || 'Участок не указан',
+    код: waste.code,
+    отход: waste.name,
+    количество_кг_шт: waste.unit === 'шт.' ? `${waste.amount || DASH} шт.` : `${formatNumber(parseNumber(waste.amountKg))} кг`,
+  }));
+}
+
+function wasteGenerationRows(data) {
+  return data.wastes.map((waste) => ({
+    код: waste.code,
+    отход: waste.name,
+    источник: waste.source || 'Источник не указан',
+    'кол-во_участков': '1',
+    количество_т_шт: waste.unit === 'шт.' ? `${waste.amount || DASH} шт.` : formatAmount(waste),
+    количество: waste.unit === 'шт.' ? waste.amount || DASH : formatNumber(parseNumber(waste.amountKg)),
+    норматив: waste.code === '9120400' ? '0,054 т / на 1 сотрудника в год' : DASH,
+    физ_сост: waste.physicalState || 'не указано',
+    состав: waste.composition || DASH,
+    'состав_%': waste.compositionPercent || DASH,
+    свойства: waste.properties || DASH,
+    класс: waste.hazardClass || 'не указан',
+  }));
+}
+
+function appendixWasteVariables(waste) {
+  const values = {
+    код: waste.code,
+    отход: waste.name,
+    норматив: waste.code === '9120400' ? '0,054 т / на 1 сотрудника в год' : DASH,
+    количество: formatAmount(waste),
+    кол_заготовка: DASH,
+    кол_сортировка: DASH,
+    кол_использование: DASH,
+    кол_обезвреживание: DASH,
+    кол_хранение: DASH,
+    кол_захоронение: DASH,
+  };
+  const key = handlingToAppendixKey(waste.handling);
+  if (key) values[key] = values.количество;
+  return values;
+}
+
+function appendixTotalVariables(wastes) {
+  const columnTotals = {
+    сумма_кол4: createAmountTotal(),
+    сумма_кол5: createAmountTotal(),
+    сумма_кол6: createAmountTotal(),
+    сумма_кол7: createAmountTotal(),
+    сумма_кол8: createAmountTotal(),
+    сумма_кол9: createAmountTotal(),
+    сумма_кол10: createAmountTotal(),
+  };
+
+  for (const waste of wastes) {
+    addWasteAmountToTotal(columnTotals.сумма_кол4, waste);
+    const handlingKey = handlingToAppendixKey(waste.handling);
+    const totalKey = handlingKey ? appendixTotalKey(handlingKey) : '';
+    if (totalKey) addWasteAmountToTotal(columnTotals[totalKey], waste);
+  }
+
+  return Object.fromEntries(
+    Object.entries(columnTotals).map(([key, value]) => [key, formatTotals(value) || DASH])
+  );
+}
+
+function appendixGroupFromLabel(label) {
+  const normalized = normalizeAnswer(label);
+  if (normalized.includes('1 класса')) return '1';
+  if (normalized.includes('2 класса')) return '2';
+  if (normalized.includes('3 класса')) return '3';
+  if (normalized.includes('4 класса')) return '4';
+  if (normalized.includes('неопас')) return 'неопасные';
+  return 'не указан';
+}
+
+function createAmountTotal() {
+  return { tonnes: 0, pieces: 0 };
+}
+
+function addWasteAmountToTotal(total, waste) {
+  if (waste.unit === 'шт.') {
+    total.pieces += parseNumber(waste.amount);
+  } else {
+    total.tonnes += waste.unit === 'кг' ? parseNumber(waste.amount) / 1000 : parseNumber(waste.amount);
+  }
+}
+
+function handlingToAppendixKey(value) {
+  const text = normalizeAnswer(value);
+  if (text.includes('заготов')) return 'кол_заготовка';
+  if (text.includes('сортиров')) return 'кол_сортировка';
+  if (text.includes('использ')) return 'кол_использование';
+  if (text.includes('обезвреж')) return 'кол_обезвреживание';
+  if (text.includes('хран') || text.includes('долговремен')) return 'кол_хранение';
+  if (text.includes('захорон')) return 'кол_захоронение';
+  return '';
+}
+
+function appendixTotalKey(handlingKey) {
+  return {
+    кол_заготовка: 'сумма_кол5',
+    кол_сортировка: 'сумма_кол6',
+    кол_использование: 'сумма_кол7',
+    кол_обезвреживание: 'сумма_кол8',
+    кол_хранение: 'сумма_кол9',
+    кол_захоронение: 'сумма_кол10',
+  }[handlingKey];
+}
+
+function extractDocxText(xml) {
+  return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)]
+    .map((match) =>
+      match[1]
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAll('&amp;', '&')
+    )
+    .join('');
 }
 
 async function applyTemplateRepeatingBlocks(buffer, template, data) {
@@ -685,7 +916,9 @@ function normalizeWasteRow(row) {
 }
 
 function normalizeHazardClass(value) {
-  const match = String(value).match(/[1-4]/);
+  const text = String(value).toLocaleLowerCase('ru-RU');
+  if (text.includes('неопас')) return 'неопасные';
+  const match = text.match(/[1-4]/);
   return match ? match[0] : 'не указан';
 }
 
@@ -741,8 +974,8 @@ function handlingToColumn(value) {
   if (text.includes('сортиров')) return 6;
   if (text.includes('использ')) return 7;
   if (text.includes('обезвреж')) return 8;
-  if (text.includes('захорон')) return 9;
-  if (text.includes('долговремен')) return 10;
+  if (text.includes('хран') || text.includes('долговремен')) return 9;
+  if (text.includes('захорон')) return 10;
   return null;
 }
 

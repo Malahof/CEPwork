@@ -56,19 +56,39 @@ export async function processRepeatingBlocks(docBuffer, placeholder, dataArray, 
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
+export async function replaceDocxPlaceholders(docBuffer, variables, options = {}) {
+  const xmlPath = options.xmlPath ?? WORD_DOCUMENT_XML;
+  const zip = await JSZip.loadAsync(docBuffer);
+  const documentFile = zip.file(xmlPath);
+  if (!documentFile) throw new Error(`DOCX XML not found: ${xmlPath}`);
+
+  const xml = await documentFile.async('string');
+  zip.file(xmlPath, replaceXmlPlaceholders(xml, variables));
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
 export function processXmlRepeatingBlocks(xml, placeholder, dataArray, options = {}) {
   const blockPattern = buildBlockPattern(options.blockType);
-  const blocks = [...xml.matchAll(blockPattern)].map((match) => ({ text: match[0], index: match.index }));
-  const markerBlocks = blocks.filter((block) => block.text.includes(placeholder));
+  const blocks = [...xml.matchAll(blockPattern)].map((match, index) => ({
+    text: match[0],
+    index: match.index,
+    blockIndex: index,
+  }));
+  const markerBlocks = blocks.filter((block) => block.text.includes(placeholder) || extractXmlText(block.text).includes(placeholder));
   if (!markerBlocks.length) return xml;
 
-  const templateBlock = markerBlocks[0].text;
+  const followingBlocks = Number.isInteger(options.followingBlocks) && options.followingBlocks > 0 ? options.followingBlocks : 0;
+  const firstGroup = blockGroup(blocks, markerBlocks[0].blockIndex, followingBlocks);
+  const lastGroup = blockGroup(blocks, markerBlocks.at(-1).blockIndex, followingBlocks);
+  const templateBlock = firstGroup.text;
   const renderedBlocks = dataArray.map((item, index) => renderBlock(templateBlock, placeholder, item, index, options));
-  const first = markerBlocks[0];
-  const last = markerBlocks.at(-1);
-  const prefix = xml.slice(0, first.index);
-  const suffix = xml.slice(last.index + last.text.length);
+  const prefix = xml.slice(0, firstGroup.index);
+  const suffix = xml.slice(lastGroup.endIndex);
   return `${prefix}${renderedBlocks.join('')}${suffix}`;
+}
+
+export function replaceXmlPlaceholders(xml, variables) {
+  return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraph) => replaceParagraphPlaceholders(paragraph, variables));
 }
 
 export function parseDateToFormat(input, format = DEFAULT_DATE_FORMAT) {
@@ -83,6 +103,10 @@ export function parseDateToFormat(input, format = DEFAULT_DATE_FORMAT) {
   if (normalizedFormat === 'YYYY-MM-DD') return `${year}-${month}-${day}`;
   if (normalizedFormat === 'YYYY/MM/DD') return `${year}/${month}/${day}`;
   return `${day}.${month}.${year}`;
+}
+
+export function formatDateToDDMMYYYY(input) {
+  return parseDateToFormat(input, DEFAULT_DATE_FORMAT);
 }
 
 export function normalizeDateFormat(format) {
@@ -102,12 +126,11 @@ function buildBlockPattern(blockType) {
 
 function renderBlock(templateBlock, placeholder, item, index, options) {
   const variables = buildVariables(item, index, options);
-  let block = templateBlock.replaceAll(placeholder, '');
-  for (const [key, value] of Object.entries(variables)) {
-    block = block.replaceAll(`[${key}]`, escapeXml(value));
-    block = block.replaceAll(`{{${key}}}`, escapeXml(value));
+  if (options.removePlaceholder !== false) {
+    const marker = placeholder.replace(/^\[/, '').replace(/\]$/, '');
+    variables[marker] = '';
   }
-  return block;
+  return replaceXmlPlaceholders(templateBlock, variables);
 }
 
 function buildVariables(item, index, options) {
@@ -127,6 +150,53 @@ function readPath(source, path) {
     .split('.')
     .filter(Boolean)
     .reduce((value, key) => (value && typeof value === 'object' ? value[key] : ''), source);
+}
+
+function blockGroup(blocks, startIndex, followingBlocks) {
+  const start = blocks[startIndex];
+  const end = blocks[Math.min(startIndex + followingBlocks, blocks.length - 1)];
+  return {
+    index: start.index,
+    text: blocks
+      .slice(startIndex, Math.min(startIndex + followingBlocks + 1, blocks.length))
+      .map((block) => block.text)
+      .join(''),
+    endIndex: end.index + end.text.length,
+  };
+}
+
+function extractXmlText(xml) {
+  return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => unescapeXml(match[1])).join('');
+}
+
+function replaceParagraphPlaceholders(paragraph, variables) {
+  const textNodes = [...paragraph.matchAll(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g)];
+  if (!textNodes.length) return paragraph;
+
+  const originalText = textNodes.map((match) => unescapeXml(match[2])).join('');
+  let replacedText = originalText;
+  for (const [key, value] of Object.entries(variables ?? {})) {
+    replacedText = replacedText.replaceAll(`[${key}]`, String(value ?? ''));
+    replacedText = replacedText.replaceAll(`{{${key}}}`, String(value ?? ''));
+  }
+  if (replacedText === originalText) return paragraph;
+
+  let output = paragraph;
+  for (let index = textNodes.length - 1; index >= 0; index -= 1) {
+    const match = textNodes[index];
+    const replacement = index === 0 ? escapeXml(replacedText) : '';
+    output = `${output.slice(0, match.index)}<w:t${match[1] ?? ''}>${replacement}</w:t>${output.slice(match.index + match[0].length)}`;
+  }
+  return output;
+}
+
+function unescapeXml(value) {
+  return String(value ?? '')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
 }
 
 function parseDateParts(input) {

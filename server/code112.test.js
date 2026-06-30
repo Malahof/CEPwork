@@ -192,7 +192,7 @@ test('code112 uses default commission members and normalizes dates in DOCX', asy
   assert.match(xml, /24\.04\.2026/);
   assert.match(xml, /А\.А\. Альфов/);
   assert.match(xml, /Б\.Б\. Бетов/);
-  assert.equal(countOccurrences(xml, 'Член комиссии'), 2);
+  assert.equal(countOccurrences(xml, 'А.А. Альфов') + countOccurrences(xml, 'Б.Б. Бетов'), 2);
 });
 
 test('code112 renders exactly the entered commission member count', async () => {
@@ -203,7 +203,7 @@ test('code112 renders exactly the entered commission member count', async () => 
       name: `Участник ${index + 1}`,
     }));
 
-    await createDocxFromTemplate(path.resolve('templates/docx/code112/title-act.json'), {
+    await createDocxFromTemplate(path.resolve('templates/docx/inventory_act/title_page_template.docx'), {
       organizationName: 'ООО Комиссия',
       legalAddress: 'г. Минск',
       actDate: '25.04.2026',
@@ -218,7 +218,8 @@ test('code112 renders exactly the entered commission member count', async () => 
     }, outputPath);
 
     const xml = await readDocxDocumentXml(outputPath);
-    assert.equal(countOccurrences(xml, 'Член комиссии'), count);
+    assert.equal(countOccurrences(xml, 'Участник'), count);
+    assert.doesNotMatch(xml, /\[должность_члена_комиссии\]|\[инициалы_фамилия_члена_комиссии\]/);
   }
 });
 
