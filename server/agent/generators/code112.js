@@ -1,31 +1,19 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  AlignmentType,
-  Document,
-  HeadingLevel,
-  Packer,
-  Paragraph,
-  Table,
-  TableCell,
-  TableRow,
-  TextRun,
-  VerticalAlign,
-  WidthType,
-} from 'docx';
 import JSZip from 'jszip';
 import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../memory.js';
+import { defaultDocsSnapshot } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 
 export const code112FallbackMessage =
   'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
 
-const FONT = 'Times New Roman';
 const DASH = '−';
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const DEFAULT_OUTPUT_DIR = path.join(PROJECT_ROOT, 'data', 'agent-docs');
+const DEFAULT_DOCS_PATH = path.join(PROJECT_ROOT, 'data', 'docs.json');
 const DEFAULT_MEMORY_PATH = path.join(PROJECT_ROOT, 'data', 'user_memory.json');
 const DEFAULT_DATE_FORMAT = 'DD.MM.YYYY';
 const TEMPLATE_DIR = path.join(PROJECT_ROOT, 'templates', 'docx', 'inventory_act');
@@ -86,6 +74,7 @@ export async function generate(projectData, userSources = {}) {
   const state = ensureGeneratorState(projectData, now);
   const answer = typeof userSources.answer === 'string' ? userSources.answer.trim() : '';
   const outputDir = userSources.outputDir ?? DEFAULT_OUTPUT_DIR;
+  const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
   const memory = await resolveCode112Memory(userSources);
   const memoryMessages = applyMemoryDefaults(projectData, state, memory);
 
@@ -124,7 +113,7 @@ export async function generate(projectData, userSources = {}) {
   }
 
   if (state.activeDocument) {
-    return finishActiveDocument(projectData, state, answer, outputDir, now);
+    return finishActiveDocument(projectData, state, answer, outputDir, docsPath, now);
   }
 
   const selectedDocument = findDocument(answer);
@@ -137,7 +126,7 @@ export async function generate(projectData, userSources = {}) {
   }
 
   if (normalizeAnswer(answer) === 'generateall' || normalizeAnswer(answer) === normalizeAnswer('Сгенерировать все')) {
-    await generateDocuments(projectData, state, code112Documents, outputDir, now);
+    await generateDocuments(projectData, state, code112Documents, outputDir, docsPath, now);
     askUser(
       projectData,
       'Все 5 документов по акту инвентаризации сформированы. Если хотите сохранить данные как кейс, отправьте команду «Запомни организацию: [название], директор [ФИО], адрес [адрес]». К чему теперь приступить?',
@@ -251,20 +240,32 @@ export function sumHazardTotals(wastes) {
 }
 
 export async function createDocxFromTemplate(templatePath, data, outputPath) {
-  if (templatePath.endsWith('.docx')) {
-    let buffer = await readFile(templatePath);
-    buffer = await applyInventoryDocxTemplate(buffer, path.basename(templatePath), data);
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, buffer);
-    return { path: outputPath, contentType: DOCX_CONTENT_TYPE };
+  if (!templatePath.endsWith('.docx')) {
+    throw new Error(`Для code112 поддерживаются только DOCX-шаблоны: ${templatePath}`);
   }
 
-  const template = JSON.parse(await readFile(templatePath, 'utf8'));
-  const document = buildDocxDocument(template, data);
-  let buffer = await Packer.toBuffer(document);
-  buffer = await applyTemplateRepeatingBlocks(buffer, template, data);
+  console.log('[code112] Загрузка DOCX-шаблона', { templatePath, outputPath });
+  let buffer;
+  try {
+    buffer = await readFile(templatePath);
+  } catch (error) {
+    throw new Error(`DOCX-шаблон code112 не найден или недоступен: ${templatePath}`, { cause: error });
+  }
+
+  if (buffer.subarray(0, 2).toString('utf8') !== 'PK') {
+    throw new Error(`Файл шаблона code112 не является DOCX: ${templatePath}`);
+  }
+
+  console.log('[code112] Применение меток DOCX-шаблона', {
+    template: path.basename(templatePath),
+    bytes: buffer.length,
+    commissionRows: data.commission.length,
+    wasteRows: data.wastes.length,
+  });
+  buffer = await applyInventoryDocxTemplate(buffer, path.basename(templatePath), data);
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, buffer);
+  console.log('[code112] DOCX-файл сохранён', { outputPath, bytes: buffer.length });
   return { path: outputPath, contentType: DOCX_CONTENT_TYPE };
 }
 
@@ -488,24 +489,6 @@ function extractDocxText(xml) {
     .join('');
 }
 
-async function applyTemplateRepeatingBlocks(buffer, template, data) {
-  if (!Array.isArray(template.repeatingBlocks)) return buffer;
-  let processed = buffer;
-  for (const block of template.repeatingBlocks) {
-    if (!block || typeof block.placeholder !== 'string') continue;
-    processed = await processRepeatingBlocks(processed, block.placeholder, readTemplateDataArray(data, block.dataPath), block.options ?? {});
-  }
-  return processed;
-}
-
-function readTemplateDataArray(data, dataPath) {
-  const value = String(dataPath ?? '')
-    .split('.')
-    .filter(Boolean)
-    .reduce((current, key) => (current && typeof current === 'object' ? current[key] : undefined), data);
-  return Array.isArray(value) ? value : [];
-}
-
 async function resolveCode112Memory(userSources) {
   if (userSources.memory !== undefined) return userSources.memory;
   const memoryPath = userSources.memoryPath ?? process.env.USER_MEMORY_PATH ?? (userSources.loadDefaultMemory ? DEFAULT_MEMORY_PATH : '');
@@ -589,7 +572,7 @@ function buildDocumentQuestion(document, state) {
   ].join('\n');
 }
 
-async function finishActiveDocument(project, state, answer, outputDir, now) {
+async function finishActiveDocument(project, state, answer, outputDir, docsPath, now) {
   const document = documentByKey.get(state.activeDocument);
   if (!document) {
     state.activeDocument = null;
@@ -605,13 +588,13 @@ async function finishActiveDocument(project, state, answer, outputDir, now) {
     return project;
   }
 
-  await generateDocuments(project, state, [document], outputDir, now);
+  await generateDocuments(project, state, [document], outputDir, docsPath, now);
   state.activeDocument = null;
   askUser(project, `Файл «${document.label}» готов. К чему теперь приступить?`, menuOptions(), now);
   return project;
 }
 
-async function generateDocuments(project, state, documents, outputDir, now) {
+async function generateDocuments(project, state, documents, outputDir, docsPath, now) {
   const data = buildTemplateData(project, state);
   const projectDir = outputDirectoryForProject(outputDir, project, data);
 
@@ -628,6 +611,8 @@ async function generateDocuments(project, state, documents, outputDir, now) {
     };
   }
 
+  await addGeneratedDocumentsToDocsTree(project, state, documents, data, docsPath, now);
+
   state.status = Object.values(state.files).every((file) => file.status === 'ready') ? 'ready' : 'in_progress';
   state.updatedAt = now;
   project.updatedAt = now;
@@ -640,6 +625,134 @@ function buildGeneratedFilesMessage(documents, state) {
     return `• ${document.label}: [скачать DOCX](${file.downloadUrl})`;
   });
   return ['Готово. Сформированы файлы:', ...links].join('\n');
+}
+
+async function addGeneratedDocumentsToDocsTree(project, state, documents, data, docsPath, now) {
+  console.log('[code112] Обновление docs.json для файлового проводника', {
+    docsPath,
+    projectId: project.id,
+    documents: documents.map((document) => document.key),
+  });
+
+  const snapshot = await readDocsSnapshot(docsPath);
+  const folderId = `agent-${project.id}-code112`;
+  const folderTitle = data.organizationName
+    ? `Акт инвентаризации — ${data.organizationName}`
+    : 'Акт инвентаризации';
+  const folderOrder = nextOrder(snapshot.folders.filter((folder) => folder.parentId === null));
+  const existingFolderIndex = snapshot.folders.findIndex((folder) => folder.id === folderId);
+
+  if (existingFolderIndex === -1) {
+    snapshot.folders.push({
+      id: folderId,
+      title: folderTitle,
+      parentId: null,
+      order: folderOrder,
+      isExpanded: true,
+    });
+  } else {
+    snapshot.folders[existingFolderIndex] = {
+      ...snapshot.folders[existingFolderIndex],
+      title: folderTitle,
+      isExpanded: true,
+    };
+  }
+
+  const preferredActiveDocument = documents.find((document) => document.key === 'titleAct') ?? documents[0];
+  for (const document of documents) {
+    const file = state.files[document.key];
+    const pageId = `agent-${project.id}-code112-${document.key}`;
+    const page = {
+      id: pageId,
+      title: document.label,
+      content: buildDocsPreviewContent(document, file, data),
+      parentId: folderId,
+      order: code112Documents.findIndex((item) => item.key === document.key),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const existingPageIndex = snapshot.pages.findIndex((item) => item.id === pageId);
+    if (existingPageIndex === -1) {
+      snapshot.pages.push(page);
+    } else {
+      snapshot.pages[existingPageIndex] = {
+        ...snapshot.pages[existingPageIndex],
+        ...page,
+        createdAt: snapshot.pages[existingPageIndex].createdAt,
+      };
+    }
+  }
+
+  snapshot.activePageId = `agent-${project.id}-code112-${preferredActiveDocument.key}`;
+  await writeDocsSnapshot(docsPath, snapshot);
+  console.log('[code112] docs.json обновлён', { activePageId: snapshot.activePageId, pages: documents.length });
+}
+
+async function readDocsSnapshot(docsPath) {
+  try {
+    const parsed = JSON.parse(await readFile(docsPath, 'utf8'));
+    return normalizeDocsSnapshot(parsed);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return structuredClone(defaultDocsSnapshot);
+    }
+    throw error;
+  }
+}
+
+async function writeDocsSnapshot(docsPath, snapshot) {
+  await mkdir(path.dirname(docsPath), { recursive: true });
+  const tmpPath = `${docsPath}.tmp`;
+  await writeFile(tmpPath, `${JSON.stringify(normalizeDocsSnapshot(snapshot), null, 2)}\n`);
+  await rename(tmpPath, docsPath);
+}
+
+function normalizeDocsSnapshot(value) {
+  return {
+    pages: Array.isArray(value?.pages) ? value.pages.map(normalizeDocPage) : [],
+    folders: Array.isArray(value?.folders) ? value.folders.map(normalizeDocFolder) : [],
+    activePageId: typeof value?.activePageId === 'string' || value?.activePageId === null ? value.activePageId : null,
+  };
+}
+
+function normalizeDocPage(page) {
+  return {
+    id: String(page.id),
+    title: String(page.title),
+    content: String(page.content ?? ''),
+    parentId: typeof page.parentId === 'string' ? page.parentId : null,
+    order: Number.isFinite(page.order) ? page.order : 0,
+    createdAt: Number.isFinite(page.createdAt) ? page.createdAt : Date.now(),
+    updatedAt: Number.isFinite(page.updatedAt) ? page.updatedAt : Date.now(),
+    ...(page.isTemplate === undefined ? {} : { isTemplate: Boolean(page.isTemplate) }),
+    ...(page.templateVariables === undefined ? {} : { templateVariables: page.templateVariables }),
+  };
+}
+
+function normalizeDocFolder(folder) {
+  return {
+    id: String(folder.id),
+    title: String(folder.title),
+    parentId: typeof folder.parentId === 'string' ? folder.parentId : null,
+    order: Number.isFinite(folder.order) ? folder.order : 0,
+    isExpanded: Boolean(folder.isExpanded),
+  };
+}
+
+function nextOrder(items) {
+  return items.reduce((max, item) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), -1) + 1;
+}
+
+function buildDocsPreviewContent(document, file, data) {
+  return [
+    `# ${document.label}`,
+    '',
+    `Организация: ${data.organizationName}`,
+    file?.downloadUrl ? `DOCX: [скачать файл](${file.downloadUrl})` : '',
+    file?.path ? `Файл на сервере: \`${path.basename(file.path)}\`` : '',
+    '',
+    'Документ сформирован Цэпиком из DOCX-шаблона акта инвентаризации.',
+  ].filter((line) => line !== '').join('\n');
 }
 
 function buildSourceSavedMessage(parsedAnswer, directWasteRows) {
@@ -1053,145 +1166,6 @@ function defaultWastes() {
       physicalState: 'смешанное',
     }),
   ];
-}
-
-function buildDocxDocument(template, data) {
-  return new Document({
-    sections: [
-      {
-        properties: {},
-        children: buildTemplateChildren(template, data),
-      },
-    ],
-  });
-}
-
-function buildTemplateChildren(template, data) {
-  if (template.key === 'titleAct') return buildTitleAct(data);
-  if (template.key === 'appendix') return buildAppendix(data);
-  if (template.key === 'sources') return buildSources(data);
-  if (template.key === 'wasteFormation') return buildWasteFormation(data);
-  if (template.key === 'measures') return buildMeasures(data);
-  return [heading(template.title), paragraph('Шаблон документа не настроен.')];
-}
-
-function buildTitleAct(data) {
-  return [
-    heading('АКТ ИНВЕНТАРИЗАЦИИ ОТХОДОВ ПРОИЗВОДСТВА'),
-    paragraph(`Организация: ${data.organizationName}`, AlignmentType.CENTER),
-    paragraph(`Юридический адрес: ${data.legalAddress}`, AlignmentType.CENTER),
-    paragraph(`Дата акта: ${data.actDate}`),
-    paragraph(`Дата начала инвентаризации: ${data.startDate}`),
-    paragraph(`УТВЕРЖДАЮ: ${data.managerPosition} ${data.managerName}`),
-    paragraph('Комиссия:'),
-    table([
-      ['Роль', 'Должность', 'Инициалы, фамилия'],
-      ['Председатель', data.chairPosition, data.chairName],
-      ...data.commission.map((member) => ['Член комиссии', member.position, member.name]),
-    ]),
-  ];
-}
-
-function buildAppendix(data) {
-  return [
-    heading('ПРИЛОЖЕНИЕ К АКТУ ИНВЕНТАРИЗАЦИИ'),
-    paragraph(`Организация: ${data.organizationName}`),
-    paragraph(`Дата акта: ${data.actDate}`),
-    table([
-      ['Код отхода', 'Наименование отхода', 'Колонка 3', 'Колонка 4', '5', '6', '7', '8', '9', '10'],
-      ...data.appendixRows.map((row) => row.cells),
-    ], { small: true, totalRows: data.appendixRows.map((row, index) => (row.type === 'total' ? index + 1 : -1)) }),
-  ];
-}
-
-function buildSources(data) {
-  const rows = data.wastes.map((waste, index) => [
-    String(index + 1),
-    waste.source || 'Источник не указан',
-    waste.source || 'Участок не указан',
-    waste.code,
-    waste.name,
-    waste.unit === 'шт.' ? formatAmount(waste) : `${formatNumber(parseNumber(waste.amountKg))} кг`,
-  ]);
-  return [
-    heading('ИСТОЧНИКИ ОБРАЗОВАНИЯ ОТХОДОВ ПРОИЗВОДСТВА'),
-    paragraph(`Организация: ${data.organizationName}`),
-    table([['№ п/п', 'Источник образования', 'Участок', 'Код отхода', 'Наименование отхода', 'Количество'], ...rows], { small: true }),
-  ];
-}
-
-function buildWasteFormation(data) {
-  const rows = data.wastes.map((waste) => [
-    waste.code,
-    waste.name,
-    waste.physicalState,
-    waste.hazardClass,
-    waste.unit === 'шт.' ? formatAmount(waste) : formatNumber(parseNumber(waste.amountKg)),
-    waste.unit === 'шт.' ? DASH : formatNumber(parseNumber(waste.amountKg) / 1000),
-  ]);
-  return [
-    heading('СВЕДЕНИЯ О КОЛИЧЕСТВЕ ОБРАЗУЮЩИХСЯ ОТХОДОВ'),
-    paragraph(`Организация: ${data.organizationName}`),
-    table([['Код', 'Наименование', 'Физическое состояние', 'Класс опасности', 'кг', 'т'], ...rows], { small: true }),
-  ];
-}
-
-function buildMeasures(data) {
-  return [
-    heading('ПЕРЕЧЕНЬ МЕРОПРИЯТИЙ'),
-    paragraph(`Организация: ${data.organizationName}`),
-    paragraph(`Председатель комиссии: ${data.chairPosition} ${data.chairName}`),
-    paragraph('Перечень мероприятий по обращению с отходами производства сформирован по результатам инвентаризации.'),
-    table([
-      ['№', 'Мероприятие', 'Ответственный', 'Срок выполнения'],
-      ['1', 'Проверить места временного хранения отходов', `${data.chairPosition} ${data.chairName}`, 'постоянно'],
-      ['2', 'Обеспечить раздельный сбор отходов по видам', `${data.chairPosition} ${data.chairName}`, 'постоянно'],
-      ['3', 'Актуализировать договоры на передачу отходов', `${data.chairPosition} ${data.chairName}`, 'ежегодно'],
-    ]),
-  ];
-}
-
-function heading(text) {
-  return new Paragraph({
-    heading: HeadingLevel.HEADING_1,
-    alignment: AlignmentType.CENTER,
-    children: [new TextRun({ text, font: FONT, size: 24, bold: true })],
-    spacing: { after: 240 },
-  });
-}
-
-function paragraph(text, alignment = AlignmentType.LEFT) {
-  return new Paragraph({
-    alignment,
-    children: [new TextRun({ text, font: FONT, size: 24 })],
-    spacing: { after: 120 },
-  });
-}
-
-function table(rows, options = {}) {
-  const totalRows = new Set(options.totalRows ?? []);
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: rows.map((row, rowIndex) =>
-      new TableRow({
-        children: row.map((cell, cellIndex) =>
-          new TableCell({
-            columnSpan: totalRows.has(rowIndex) && cellIndex === 0 ? 2 : undefined,
-            children: [tableParagraph(cell, options.small)],
-            verticalAlign: VerticalAlign.CENTER,
-            width: { size: Math.floor(100 / row.length), type: WidthType.PERCENTAGE },
-          })
-        ).filter((_, cellIndex) => !(totalRows.has(rowIndex) && cellIndex === 1)),
-      })
-    ),
-  });
-}
-
-function tableParagraph(text, small = false) {
-  return new Paragraph({
-    alignment: AlignmentType.CENTER,
-    children: [new TextRun({ text: String(text), font: FONT, size: small ? 20 : 24 })],
-  });
 }
 
 function slugify(value) {

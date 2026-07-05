@@ -8,6 +8,7 @@ import {
   startAgentProject,
   uploadAgentFile,
 } from '../api/agentApi';
+import { useDocStore } from '../store/useDocStore';
 import type { AgentProject } from '../types';
 
 function renderMessageText(text: string) {
@@ -46,6 +47,7 @@ export function ChatWizard() {
   const [isFileUploading, setIsFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const loadDocs = useDocStore((state) => state.loadDocs);
 
   const messages = useMemo(
     () =>
@@ -119,6 +121,7 @@ export function ChatWizard() {
     setError(null);
     try {
       updateProjectList(await selectAgentAnswer(project.id, answer));
+      await loadDocs();
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
@@ -143,6 +146,7 @@ export function ChatWizard() {
     try {
       const result = await uploadAgentFile(project.id, file);
       updateProjectList(result.project);
+      await loadDocs();
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось обработать файл');
     } finally {

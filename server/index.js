@@ -522,7 +522,7 @@ app.post('/api/agent/select', async (req, res, next) => {
         error.statusCode = 404;
         throw error;
       }
-      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, memoryPath: userMemoryPath });
+      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, docsPath, memoryPath: userMemoryPath });
     });
 
     res.json(serializeAgentProject(project));

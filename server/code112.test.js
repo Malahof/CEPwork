@@ -59,9 +59,9 @@ test('code112 builds appendix totals for tonnes and pieces', () => {
   assert.ok(rows.some((row) => row.cells.includes('0,054 т / на 1 сотрудника в год')));
 });
 
-test('code112 creates a DOCX file from a template descriptor', async () => {
+test('code112 creates a DOCX file from the prepared inventory act template', async () => {
   const outputPath = path.join(tempDir, 'title.docx');
-  await createDocxFromTemplate(path.resolve('templates/docx/code112/title-act.json'), {
+  await createDocxFromTemplate(path.resolve('templates/docx/inventory_act/title_page_template.docx'), {
     organizationName: 'ООО Ромашка',
     legalAddress: 'г. Минск',
     actDate: '21.06.2026',
@@ -80,6 +80,17 @@ test('code112 creates a DOCX file from a template descriptor', async () => {
 
   const buffer = await readFile(outputPath);
   assert.equal(buffer.subarray(0, 2).toString('utf8'), 'PK');
+  const xml = await readDocxDocumentXml(outputPath);
+  assert.match(xml, /УТВЕРЖДАЮ/);
+  assert.match(xml, /ООО Ромашка/);
+  assert.doesNotMatch(xml, /\[название_организации\]/);
+});
+
+test('code112 rejects non-DOCX templates instead of building documents from scratch', async () => {
+  await assert.rejects(
+    createDocxFromTemplate(path.resolve('templates/docx/code112/title-act.json'), {}, path.join(tempDir, 'legacy.docx')),
+    /только DOCX-шаблоны/
+  );
 });
 
 test('code112 accepts manual source fields from the menu', async () => {
@@ -89,11 +100,12 @@ test('code112 accepts manual source fields from the menu', async () => {
     history: [],
   };
 
-  await generate(project, { now: 1, outputDir: tempDir });
+  await generate(project, { now: 1, outputDir: tempDir, docsPath: path.join(tempDir, 'menu-source-docs.json') });
   await generate(project, {
     answer: 'Комиссия: председатель Сидоров С.С.; инженер Иванов И.И.; эколог Петров П.П.',
     now: 2,
     outputDir: tempDir,
+    docsPath: path.join(tempDir, 'menu-source-docs.json'),
   });
 
   assert.equal(
@@ -127,11 +139,12 @@ test('code112 confirms and applies saved organization data from memory', async (
     ],
   };
 
-  await generate(project, { now: 1, outputDir: tempDir, memory });
+  await generate(project, { now: 1, outputDir: tempDir, docsPath: path.join(tempDir, 'memory-org-docs.json'), memory });
   await generate(project, {
     answer: 'Название организации: ООО Ромашка',
     now: 2,
     outputDir: tempDir,
+    docsPath: path.join(tempDir, 'memory-org-docs.json'),
     memory,
   });
 
@@ -145,6 +158,7 @@ test('code112 confirms and applies saved organization data from memory', async (
     answer: 'Да',
     now: 3,
     outputDir: tempDir,
+    docsPath: path.join(tempDir, 'memory-org-docs.json'),
     memory,
   });
 
@@ -174,7 +188,8 @@ test('code112 uses default commission members and normalizes dates in DOCX', asy
     savedInstructions: [],
   };
 
-  await generate(project, { now: 1, outputDir: tempDir, memory });
+  const docsPath = path.join(tempDir, 'memory-members-docs.json');
+  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory });
   await generate(project, {
     answer: [
       'Название организации: ООО Дата',
@@ -183,9 +198,10 @@ test('code112 uses default commission members and normalizes dates in DOCX', asy
     ].join('\n'),
     now: 2,
     outputDir: tempDir,
+    docsPath,
     memory,
   });
-  await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, memory });
+  await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory });
 
   const xml = await readDocxDocumentXml(project.extractedData.code112.files.titleAct.path);
   assert.match(xml, /25\.04\.2026/);
@@ -193,6 +209,45 @@ test('code112 uses default commission members and normalizes dates in DOCX', asy
   assert.match(xml, /А\.А\. Альфов/);
   assert.match(xml, /Б\.Б\. Бетов/);
   assert.equal(countOccurrences(xml, 'А.А. Альфов') + countOccurrences(xml, 'Б.Б. Бетов'), 2);
+});
+
+test('code112 adds generated documents to docs tree and activates the title page', async () => {
+  const project = {
+    id: 'code112-docs-tree',
+    packageTitle: 'Акт инвентаризации',
+    extractedData: {},
+    history: [],
+  };
+  const docsPath = path.join(tempDir, 'docs-tree.json');
+
+  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+  await generate(project, {
+    answer: [
+      'Название организации: ООО ДокДерево',
+      'Дата акта: 25.04.2026',
+      'Дата начала: 24.04.2026',
+      'Должность руководителя: Директор',
+      'Инициалы фамилия руководителя: И.И. Иванов',
+      'Юридический адрес: г. Минск',
+      'Должность председателя: Главный инженер',
+      'Инициалы фамилия председателя: П.П. Петров',
+      'Комиссия: эколог С.С. Сидоров; мастер А.А. Алексеев',
+      'Отход: 9120400;Отходы производства, подобные коммунальным;4;0,054;т;захоронение;Офис;смешанное',
+    ].join('\n'),
+    now: 2,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+  await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory: null });
+
+  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  const folder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
+  assert.equal(folder.title, 'Акт инвентаризации — ООО ДокДерево');
+  const pages = snapshot.pages.filter((item) => item.parentId === folder.id);
+  assert.equal(pages.length, 5);
+  assert.equal(snapshot.activePageId, 'agent-code112-docs-tree-code112-titleAct');
+  assert.match(pages.find((item) => item.id === snapshot.activePageId).content, /ООО ДокДерево/);
 });
 
 test('code112 renders exactly the entered commission member count', async () => {

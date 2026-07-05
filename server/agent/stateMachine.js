@@ -235,7 +235,7 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
 
     if (project.packageCode === '112') {
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
-      return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, memory });
+      return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
 
     addUserMessage(project, normalizedAnswer, now);
@@ -301,7 +301,7 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
     addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
     if (packageDefinition.code === '112') {
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
-      return generateCode112(project, { now, outputDir: context.outputDir, memory });
+      return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
     return project;
   }
