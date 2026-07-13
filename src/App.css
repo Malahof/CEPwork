@@ -310,6 +310,7 @@
   background: #ffffff;
   border-left: 1px solid #e8e8f0;
   overflow: hidden;
+  min-height: 0;
 }
 
 .eco-agent-header {
@@ -374,6 +375,9 @@
   display: grid;
   gap: 8px;
   padding: 0 12px 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .chat-section-title {
@@ -444,6 +448,7 @@
   gap: 10px;
   padding: 0 12px 12px;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .eco-agent-message {
@@ -523,6 +528,7 @@
   padding: 12px;
   border-top: 1px solid #e8e8f0;
   background: #fafbfe;
+  flex-shrink: 0;
 }
 
 .chat-options-panel {

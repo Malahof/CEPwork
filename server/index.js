@@ -40,6 +40,11 @@ const userMemoryPath = process.env.USER_MEMORY_PATH
   : path.resolve(dataDir, 'user_memory.json');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+const legacySampleTemplatePageIds = new Set([
+  'template-meeting-notes',
+  'template-project-plan',
+  'template-eco-document',
+]);
 
 export const app = express();
 
@@ -70,14 +75,19 @@ function normalizeDocsSnapshot(value) {
   if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.folders)) {
     throw new Error('Invalid docs snapshot');
   }
+  const pages = value.pages
+    .map(normalizePage)
+    .filter((page) => !legacySampleTemplatePageIds.has(page.id));
+  const folders = value.folders.map(normalizeFolder).filter((folder) => folder.id !== 'templates');
+  const activePageId =
+    typeof value.activePageId === 'string' || value.activePageId === null
+      ? value.activePageId
+      : null;
 
   return {
-    pages: value.pages.map(normalizePage),
-    folders: value.folders.map(normalizeFolder),
-    activePageId:
-      typeof value.activePageId === 'string' || value.activePageId === null
-        ? value.activePageId
-        : null,
+    pages,
+    folders,
+    activePageId: activePageId && legacySampleTemplatePageIds.has(activePageId) ? 'welcome' : activePageId,
   };
 }
 

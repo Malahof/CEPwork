@@ -40,8 +40,9 @@ test('GET /api/docs returns and persists the default snapshot', async () => {
   const snapshot = await response.json();
   assert.ok(Array.isArray(snapshot.pages));
   assert.ok(Array.isArray(snapshot.folders));
-  assert.ok(snapshot.pages.some((page) => page.isTemplate));
-  assert.ok(snapshot.folders.some((folder) => folder.id === 'templates'));
+  assert.ok(snapshot.pages.some((page) => page.id === 'welcome'));
+  assert.equal(snapshot.pages.some((page) => page.id === 'template-meeting-notes'), false);
+  assert.equal(snapshot.folders.some((folder) => folder.id === 'templates'), false);
 
   const persisted = JSON.parse(await readFile(process.env.DOCS_DATA_PATH, 'utf8'));
   assert.equal(persisted.activePageId, snapshot.activePageId);

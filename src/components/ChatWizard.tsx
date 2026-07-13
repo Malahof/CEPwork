@@ -48,6 +48,7 @@ export function ChatWizard() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadDocs = useDocStore((state) => state.loadDocs);
+  const availableOptions = useMemo(() => project?.availableOptions ?? [], [project?.availableOptions]);
 
   const messages = useMemo(
     () =>
@@ -85,7 +86,33 @@ export function ChatWizard() {
     };
   }, []);
 
+  useEffect(() => {
+    console.info('[ChatWizard] state', {
+      projectId: project?.id ?? null,
+      status: project?.status ?? null,
+      packageCode: project?.packageCode ?? null,
+      availableOptions: availableOptions.map((option) => option.key),
+      isLoading,
+      isSelecting,
+      isFileUploading,
+    });
+  }, [
+    availableOptions,
+    isFileUploading,
+    isLoading,
+    isSelecting,
+    project?.id,
+    project?.packageCode,
+    project?.status,
+  ]);
+
   function updateProjectList(updated: AgentProject) {
+    console.info('[ChatWizard] updateProjectList', {
+      projectId: updated.id,
+      status: updated.status,
+      packageCode: updated.packageCode ?? null,
+      availableOptions: updated.availableOptions.map((option) => option.key),
+    });
     setProject(updated);
     setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
   }
@@ -94,6 +121,7 @@ export function ChatWizard() {
     setIsLoading(true);
     setError(null);
     try {
+      console.info('[ChatWizard] startProject');
       updateProjectList(await startAgentProject());
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось начать проект Цэпика');
@@ -106,7 +134,8 @@ export function ChatWizard() {
     setIsLoading(true);
     setError(null);
     try {
-      setProject(await fetchAgentProjectState(projectId));
+      console.info('[ChatWizard] resumeProject', { projectId });
+      updateProjectList(await fetchAgentProjectState(projectId));
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось открыть проект Цэпика');
     } finally {
@@ -120,8 +149,9 @@ export function ChatWizard() {
     setIsSelecting(true);
     setError(null);
     try {
+      console.info('[ChatWizard] selectAnswer', { projectId: project.id, answer });
       updateProjectList(await selectAgentAnswer(project.id, answer));
-      await loadDocs();
+      await loadDocs({ silent: true });
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
@@ -144,9 +174,14 @@ export function ChatWizard() {
     setIsFileUploading(true);
     setError(null);
     try {
+      console.info('[ChatWizard] uploadFile:start', {
+        projectId: project.id,
+        fileName: file.name,
+        fileSize: file.size,
+      });
       const result = await uploadAgentFile(project.id, file);
       updateProjectList(result.project);
-      await loadDocs();
+      await loadDocs({ silent: true });
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось обработать файл');
     } finally {
@@ -246,11 +281,11 @@ export function ChatWizard() {
       {error && <div className="editor-error">{error}</div>}
 
       <div className="eco-agent-input chat-options-panel">
-        {project?.availableOptions.length ? (
+        {availableOptions.length ? (
           <>
             <div className="chat-section-title">Выберите вариант ответа</div>
             <div className="chat-option-grid">
-              {project.availableOptions.map((option) => (
+              {availableOptions.map((option) => (
                 <button
                   className="btn btn-secondary btn-sm chat-option"
                   key={option.key}
