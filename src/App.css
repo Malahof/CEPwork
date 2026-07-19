@@ -310,6 +310,7 @@
   background: #ffffff;
   border-left: 1px solid #e8e8f0;
   overflow: hidden;
+  min-height: 0;
 }
 
 .eco-agent-header {
@@ -374,6 +375,9 @@
   display: grid;
   gap: 8px;
   padding: 0 12px 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .chat-section-title {
@@ -444,6 +448,7 @@
   gap: 10px;
   padding: 0 12px 12px;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .eco-agent-message {
@@ -523,6 +528,7 @@
   padding: 12px;
   border-top: 1px solid #e8e8f0;
   background: #fafbfe;
+  flex-shrink: 0;
 }
 
 .chat-options-panel {
@@ -582,6 +588,58 @@
   opacity: 0.55;
   cursor: not-allowed;
   transform: none;
+}
+
+.chat-status {
+  color: #8888a0;
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-file-input {
+  display: none;
+}
+
+.chat-file-button {
+  flex-shrink: 0;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.chat-text-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid #dfe2f0;
+  border-radius: 8px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: #1a1a2e;
+  outline: none;
+}
+
+.chat-text-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.12);
+}
+
+.chat-text-input:disabled {
+  background: #f1f1f5;
+  color: #8888a0;
+}
+
+.chat-send-button {
+  flex-shrink: 0;
+  height: 36px;
 }
 
 /* ===== Template Dialog ===== */

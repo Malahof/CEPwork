@@ -1,6 +1,19 @@
 import { randomUUID } from 'node:crypto';
+import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question } from './generators/code112.js';
+import {
+  buildMemoryLoadedMessage,
+  buildMemorySystemPrompt,
+  deleteInstruction,
+  deleteOrganization,
+  formatMemoryForChat,
+  readUserMemory,
+  saveInstruction,
+  saveOrganization,
+} from './memory.js';
 
 const welcomeMessage = 'Цэпик ожидает ваших указаний для начала работы.';
+const unsupportedDocumentationMessage = code112FallbackMessage;
+const packageGeneratorCodes = new Set(['112']);
 
 const packageDefinitions = {
   instruction: {
@@ -185,7 +198,8 @@ const agentTree = {
   },
 };
 
-export function createAgentProject(now = Date.now()) {
+export function createAgentProject(now = Date.now(), memory = null) {
+  const systemPrompt = memory ? buildMemorySystemPrompt(memory) : '';
   const project = {
     id: randomUUID(),
     createdAt: now,
@@ -193,28 +207,71 @@ export function createAgentProject(now = Date.now()) {
     status: 'selecting',
     currentNode: 'sphere',
     selections: {},
-    extractedData: {},
+    systemPrompt,
+    extractedData: {
+      memoryContext: systemPrompt,
+    },
     history: [],
   };
 
   addAgentMessage(project, welcomeMessage, now);
+  const memoryMessage = memory ? buildMemoryLoadedMessage(memory) : '';
+  if (memoryMessage) addAgentMessage(project, memoryMessage, now);
   addAgentMessage(project, agentTree.sphere.question, now);
   return project;
 }
 
-export function selectAgentAnswer(project, answer, now = Date.now()) {
+export async function selectAgentAnswer(project, answer, now = Date.now(), context = {}) {
+  const normalizedAnswer = answer.trim();
+  const memoryCommandResult = await handleMemoryCommand(project, normalizedAnswer, now, context.memoryPath);
+  if (memoryCommandResult) return memoryCommandResult;
+
   if (project.status !== 'selecting' || !project.currentNode) {
-    const error = new Error('Project selection is already completed');
-    error.statusCode = 409;
-    throw error;
+    if (!normalizedAnswer) {
+      const error = new Error('Пожалуйста, выберите вариант ответа.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (project.packageCode === '112') {
+      const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
+      return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+    }
+
+    addUserMessage(project, normalizedAnswer, now);
+    if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
+      logUnsupportedPackage(project, normalizedAnswer);
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      project.updatedAt = now;
+      return project;
+    }
+
+    project.extractedData.messages = [
+      ...(Array.isArray(project.extractedData.messages) ? project.extractedData.messages : []),
+      { text: normalizedAnswer, createdAt: now },
+    ];
+    project.updatedAt = now;
+    addAgentMessage(project, 'Сообщение принято. Цэпик сохранит его как источник для следующих этапов.', now);
+    return project;
   }
 
   const node = agentTree[project.currentNode];
-  if (!node) throw new Error(`Unknown agent node: ${project.currentNode}`);
+  if (!node) throw new Error(`Неизвестный шаг Цэпика: ${project.currentNode}`);
 
-  const option = node.options.find((item) => item.key === answer);
+  const normalizedLabel = normalizedAnswer.toLocaleLowerCase('ru-RU');
+  const option = node.options.find(
+    (item) => item.key === normalizedAnswer || item.label.toLocaleLowerCase('ru-RU') === normalizedLabel
+  );
   if (!option) {
-    const error = new Error('Invalid agent answer');
+    if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
+      addUserMessage(project, normalizedAnswer, now);
+      logUnsupportedPackage(project, normalizedAnswer);
+      project.updatedAt = now;
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      return project;
+    }
+
+    const error = new Error('Пожалуйста, выберите один из предложенных вариантов.');
     error.statusCode = 400;
     throw error;
   }
@@ -228,7 +285,13 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
 
   if (option.packageKey) {
     const packageDefinition = packageDefinitions[option.packageKey];
-    if (!packageDefinition) throw new Error(`Unknown package key: ${option.packageKey}`);
+    if (!packageDefinition) throw new Error(`Неизвестный пакет документации: ${option.packageKey}`);
+
+    if (!hasPackageGenerator(packageDefinition.code)) {
+      logUnsupportedPackage(project, packageDefinition.code);
+      addAgentMessage(project, unsupportedDocumentationMessage, now);
+      return project;
+    }
 
     project.status = 'package_selected';
     project.currentNode = null;
@@ -236,14 +299,141 @@ export function selectAgentAnswer(project, answer, now = Date.now()) {
     project.packageTitle = packageDefinition.title;
     project.documents = packageDefinition.documents;
     addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+    if (packageDefinition.code === '112') {
+      const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
+      return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+    }
     return project;
   }
 
   project.currentNode = option.nextNode;
   const nextNode = agentTree[project.currentNode];
-  if (!nextNode) throw new Error(`Unknown next node: ${project.currentNode}`);
+  if (!nextNode) throw new Error(`Неизвестный следующий шаг Цэпика: ${project.currentNode}`);
   addAgentMessage(project, nextNode.question, now);
   return project;
+}
+
+async function handleMemoryCommand(project, answer, now, memoryPath) {
+  if (!answer || !memoryPath) return null;
+
+  const rememberInstruction = answer.match(/^запомни\s*:\s*(.+)$/iu);
+  if (rememberInstruction) {
+    addUserMessage(project, answer, now);
+    const { instruction, created } = await saveInstruction(memoryPath, rememberInstruction[1], now);
+    project.systemPrompt = buildMemorySystemPrompt(await readUserMemory(memoryPath));
+    project.extractedData.memoryContext = project.systemPrompt;
+    project.updatedAt = now;
+    addAgentMessage(
+      project,
+      created ? `Запомнил инструкцию: ${instruction.text}` : `Такая инструкция уже есть в памяти: ${instruction.text}`,
+      now
+    );
+    return project;
+  }
+
+  const rememberOrganization = answer.match(/^запомни\s+организац(?:ию|ия)\s*:\s*(.+)$/iu);
+  if (rememberOrganization) {
+    addUserMessage(project, answer, now);
+    const { organization, created } = await saveOrganization(memoryPath, parseOrganizationCommand(rememberOrganization[1]), now);
+    project.systemPrompt = buildMemorySystemPrompt(await readUserMemory(memoryPath));
+    project.extractedData.memoryContext = project.systemPrompt;
+    project.updatedAt = now;
+    addAgentMessage(
+      project,
+      created
+        ? `Запомнил организацию: ${organization.name}.`
+        : `Обновил сохранённую организацию: ${organization.name}.`,
+      now
+    );
+    return project;
+  }
+
+  if (/^покажи,?\s+что\s+ты\s+запомнил$/iu.test(answer)) {
+    addUserMessage(project, answer, now);
+    const memory = await readUserMemory(memoryPath);
+    project.systemPrompt = buildMemorySystemPrompt(memory);
+    project.extractedData.memoryContext = project.systemPrompt;
+    project.updatedAt = now;
+    addAgentMessage(project, formatMemoryForChat(memory), now);
+    return project;
+  }
+
+  const forgetInstruction = answer.match(/^забудь\s+инструкцию\s+(.+)$/iu);
+  if (forgetInstruction) {
+    addUserMessage(project, answer, now);
+    const result = await deleteInstruction(memoryPath, forgetInstruction[1]);
+    const memory = await readUserMemory(memoryPath);
+    project.systemPrompt = buildMemorySystemPrompt(memory);
+    project.extractedData.memoryContext = project.systemPrompt;
+    project.updatedAt = now;
+    addAgentMessage(
+      project,
+      result.deleted
+        ? `Забыл инструкцию: ${result.instruction.text}`
+        : 'Не нашёл такую инструкцию в памяти.',
+      now
+    );
+    return project;
+  }
+
+  const forgetOrganization = answer.match(/^забудь\s+организац(?:ию|ия)\s+(.+)$/iu);
+  if (forgetOrganization) {
+    addUserMessage(project, answer, now);
+    const result = await deleteOrganization(memoryPath, forgetOrganization[1]);
+    const memory = await readUserMemory(memoryPath);
+    project.systemPrompt = buildMemorySystemPrompt(memory);
+    project.extractedData.memoryContext = project.systemPrompt;
+    project.updatedAt = now;
+    addAgentMessage(
+      project,
+      result.deleted
+        ? `Забыл организацию: ${result.organization.name}`
+        : 'Не нашёл такую организацию в памяти.',
+      now
+    );
+    return project;
+  }
+
+  return null;
+}
+
+function parseOrganizationCommand(text) {
+  const parts = text.split(',').map((part) => part.trim()).filter(Boolean);
+  const organization = {
+    name: parts[0] ?? text.trim(),
+    director: '',
+    address: '',
+    okved: '',
+    typicalWastes: [],
+  };
+
+  for (const part of parts.slice(1)) {
+    const director = part.match(/^(?:директор|руководитель)\s+(.+)$/iu);
+    const address = part.match(/^адрес\s+(.+)$/iu);
+    const okved = part.match(/^оквэд\s+(.+)$/iu);
+    const wastes = part.match(/^типовые\s+отходы\s+(.+)$/iu);
+    if (director) organization.director = director[1].trim();
+    else if (address) organization.address = address[1].trim();
+    else if (okved) organization.okved = okved[1].trim();
+    else if (wastes) organization.typicalWastes = wastes[1].split(';').map((item) => item.trim()).filter(Boolean);
+  }
+
+  return organization;
+}
+
+function isPackageCode(answer) {
+  return /^\d+$/.test(answer);
+}
+
+function hasPackageGenerator(code) {
+  return packageGeneratorCodes.has(code);
+}
+
+function logUnsupportedPackage(project, code) {
+  console.log('[Цэпик] Запрошена нереализованная ветка', {
+    projectId: project.id,
+    code,
+  });
 }
 
 export function serializeAgentProject(project) {
@@ -262,11 +452,13 @@ export function listOpenProjects(projects) {
 }
 
 function currentQuestion(project) {
+  if (project.packageCode === '112') return getCode112Question(project);
   if (project.status !== 'selecting' || !project.currentNode) return null;
   return agentTree[project.currentNode]?.question ?? null;
 }
 
 function currentOptions(project) {
+  if (project.packageCode === '112') return getCode112Options(project);
   if (project.status !== 'selecting' || !project.currentNode) return [];
   return (agentTree[project.currentNode]?.options ?? []).map(({ key, label }) => ({ key, label }));
 }

@@ -13,7 +13,7 @@ interface DocState {
   isSaving: boolean;
   error: string | null;
 
-  loadDocs: () => Promise<void>;
+  loadDocs: (options?: { silent?: boolean }) => Promise<void>;
   saveCurrentDocs: () => Promise<void>;
   addPage: (title: string, parentId: string | null) => DocPage;
   createPageFromTemplate: (templateId: string, values: Record<string, string>) => DocPage | null;
@@ -33,6 +33,12 @@ interface DocState {
 
 type DocsUpdater = (state: DocState) => DocsSnapshot;
 
+const legacySampleTemplatePageIds = new Set([
+  'template-meeting-notes',
+  'template-project-plan',
+  'template-eco-document',
+]);
+
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -46,10 +52,14 @@ function docsSnapshotFromState(state: DocState): DocsSnapshot {
 }
 
 function snapshotWithDefaultTemplates(snapshot: DocsSnapshot): DocsSnapshot {
+  const withoutLegacySamples: DocsSnapshot = {
+    pages: snapshot.pages.filter((page) => !legacySampleTemplatePageIds.has(page.id)),
+    folders: snapshot.folders.filter((folder) => folder.id !== 'templates'),
+    activePageId: legacySampleTemplatePageIds.has(snapshot.activePageId ?? '') ? 'welcome' : snapshot.activePageId,
+  };
   const defaultTemplates = defaultDocsSnapshot.pages.filter((page) => page.isTemplate);
-  const templateIds = new Set(defaultTemplates.map((page) => page.id));
   const defaultTemplateById = new Map(defaultTemplates.map((page) => [page.id, page]));
-  const pages = snapshot.pages.map((page) => {
+  const pages = withoutLegacySamples.pages.map((page) => {
     const defaultTemplate = defaultTemplateById.get(page.id);
     if (!defaultTemplate) return page;
 
@@ -65,12 +75,12 @@ function snapshotWithDefaultTemplates(snapshot: DocsSnapshot): DocsSnapshot {
   const existingPageIds = new Set(pages.map((page) => page.id));
   const missingTemplates = defaultTemplates.filter((page) => !existingPageIds.has(page.id));
   const templateFolder = defaultDocsSnapshot.folders.find((folder) => folder.id === 'templates');
-  const hasTemplateFolder = snapshot.folders.some((folder) => folder.id === 'templates');
+  const hasTemplateFolder = withoutLegacySamples.folders.some((folder) => folder.id === 'templates');
 
   return {
     pages: [...pages, ...missingTemplates],
-    folders: hasTemplateFolder || !templateFolder ? snapshot.folders : [...snapshot.folders, templateFolder],
-    activePageId: templateIds.has(snapshot.activePageId ?? '') ? snapshot.activePageId : snapshot.activePageId,
+    folders: hasTemplateFolder || !templateFolder ? withoutLegacySamples.folders : [...withoutLegacySamples.folders, templateFolder],
+    activePageId: withoutLegacySamples.activePageId,
   };
 }
 
@@ -123,19 +133,20 @@ export const useDocStore = create<DocState>()((set, get) => {
     isSaving: false,
     error: null,
 
-    loadDocs: async () => {
-      set({ isLoading: true, error: null });
+    loadDocs: async (options = {}) => {
+      if (!options.silent) set({ isLoading: true, error: null });
+      else set({ error: null });
       try {
         const snapshot = snapshotWithDefaultTemplates(await fetchDocs());
         set({
           pages: snapshot.pages,
           folders: snapshot.folders,
           activePageId: snapshot.activePageId,
-          isLoading: false,
+          ...(options.silent ? {} : { isLoading: false }),
         });
       } catch (error) {
         set({
-          isLoading: false,
+          ...(options.silent ? {} : { isLoading: false }),
           error: error instanceof Error ? error.message : 'Не удалось загрузить документы',
         });
       }

@@ -1,6 +1,8 @@
 import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { inflateRawSync } from 'node:zlib';
+import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot } from './defaultDocs.js';
 import {
@@ -13,6 +15,14 @@ import {
   readAgentProjects,
   updateAgentProjects,
 } from './agent/storage.js';
+import {
+  buildMemorySystemPrompt,
+  deleteInstruction,
+  readUserMemory,
+  saveInstruction,
+  saveOrganization,
+  saveUserPreferences,
+} from './agent/memory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
@@ -22,8 +32,19 @@ const dataDir = path.dirname(docsPath);
 const agentProjectsPath = process.env.AGENT_PROJECTS_PATH
   ? path.resolve(process.env.AGENT_PROJECTS_PATH)
   : path.resolve(dataDir, 'eco_projects.json');
+const agentOutputDir = process.env.AGENT_OUTPUT_DIR
+  ? path.resolve(process.env.AGENT_OUTPUT_DIR)
+  : path.resolve(dataDir, 'agent-docs');
+const userMemoryPath = process.env.USER_MEMORY_PATH
+  ? path.resolve(process.env.USER_MEMORY_PATH)
+  : path.resolve(dataDir, 'user_memory.json');
 const port = Number(process.env.PORT ?? 3001);
 const openAiModel = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+const legacySampleTemplatePageIds = new Set([
+  'template-meeting-notes',
+  'template-project-plan',
+  'template-eco-document',
+]);
 
 export const app = express();
 
@@ -54,14 +75,19 @@ function normalizeDocsSnapshot(value) {
   if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.folders)) {
     throw new Error('Invalid docs snapshot');
   }
+  const pages = value.pages
+    .map(normalizePage)
+    .filter((page) => !legacySampleTemplatePageIds.has(page.id));
+  const folders = value.folders.map(normalizeFolder).filter((folder) => folder.id !== 'templates');
+  const activePageId =
+    typeof value.activePageId === 'string' || value.activePageId === null
+      ? value.activePageId
+      : null;
 
   return {
-    pages: value.pages.map(normalizePage),
-    folders: value.folders.map(normalizeFolder),
-    activePageId:
-      typeof value.activePageId === 'string' || value.activePageId === null
-        ? value.activePageId
-        : null,
+    pages,
+    folders,
+    activePageId: activePageId && legacySampleTemplatePageIds.has(activePageId) ? 'welcome' : activePageId,
   };
 }
 
@@ -143,6 +169,176 @@ function optionalString(value, field) {
   return requireString(value, field);
 }
 
+async function parseMultipartFormData(req) {
+  const contentType = req.headers['content-type'] ?? '';
+  const boundaryMatch = contentType.match(/boundary=(?:(?:"([^"]+)")|([^;]+))/i);
+  if (!boundaryMatch) {
+    const error = new Error('Некорректные данные формы загрузки');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const body = await readRequestBuffer(req, 10 * 1024 * 1024);
+  const boundary = `--${boundaryMatch[1] ?? boundaryMatch[2]}`;
+  const fields = {};
+  const files = {};
+
+  for (const rawPart of body.toString('latin1').split(boundary)) {
+    let part = rawPart;
+    if (!part || part === '--' || part === '--\r\n') continue;
+    if (part.startsWith('\r\n')) part = part.slice(2);
+    if (part.endsWith('\r\n')) part = part.slice(0, -2);
+    if (part.endsWith('--')) part = part.slice(0, -2);
+
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+
+    const headerLines = part.slice(0, headerEnd).split('\r\n');
+    const headers = Object.fromEntries(
+      headerLines.map((line) => {
+        const separator = line.indexOf(':');
+        return [line.slice(0, separator).toLowerCase(), line.slice(separator + 1).trim()];
+      })
+    );
+    const disposition = parseContentDisposition(headers['content-disposition'] ?? '');
+    if (!disposition.name) continue;
+
+    const content = Buffer.from(part.slice(headerEnd + 4), 'latin1');
+    if (disposition.filename) {
+      files[disposition.name] = {
+        filename: path.basename(disposition.filename),
+        mimeType: headers['content-type'] ?? 'application/octet-stream',
+        buffer: content,
+      };
+    } else {
+      fields[disposition.name] = content.toString('utf8');
+    }
+  }
+
+  return { fields, files };
+}
+
+async function readRequestBuffer(req, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) {
+      const error = new Error('Загружаемый файл слишком большой');
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseContentDisposition(value) {
+  const result = {};
+  for (const part of value.split(';')) {
+    const [rawKey, ...rawValue] = part.trim().split('=');
+    if (!rawKey || rawValue.length === 0) continue;
+    result[rawKey] = rawValue.join('=').replace(/^"|"$/g, '');
+  }
+  return result;
+}
+
+function extractUploadedText(file) {
+  const extension = path.extname(file.filename).toLowerCase();
+  if (extension === '.xlsx' || extension === '.xls') return extractSpreadsheetText(file.buffer);
+  if (extension === '.docx') return extractDocxText(file.buffer);
+  if (extension === '.pdf') return extractPdfText(file.buffer);
+  if (['.txt', '.csv', '.md', '.json'].includes(extension) || file.mimeType.startsWith('text/')) {
+    return file.buffer.toString('utf8').trim();
+  }
+  return '';
+}
+
+function extractSpreadsheetText(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  return workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]))
+    .join('\n')
+    .trim();
+}
+
+function extractDocxText(buffer) {
+  const entries = readZipEntries(buffer);
+  const names = [...entries.keys()].filter((name) => /^word\/(document|header|footer|footnotes|endnotes).*\.xml$/.test(name));
+  return names
+    .map((name) => extractOfficeXmlText(entries.get(name).toString('utf8')))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function readZipEntries(buffer) {
+  const entries = new Map();
+  const eocdOffset = findEndOfCentralDirectory(buffer);
+  if (eocdOffset === -1) return entries;
+
+  const totalEntries = buffer.readUInt16LE(eocdOffset + 10);
+  let centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (buffer.readUInt32LE(centralDirectoryOffset) !== 0x02014b50) break;
+
+    const compressionMethod = buffer.readUInt16LE(centralDirectoryOffset + 10);
+    const compressedSize = buffer.readUInt32LE(centralDirectoryOffset + 20);
+    const fileNameLength = buffer.readUInt16LE(centralDirectoryOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralDirectoryOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralDirectoryOffset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(centralDirectoryOffset + 42);
+    const fileNameStart = centralDirectoryOffset + 46;
+    const fileName = buffer.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
+
+    const localFileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+
+    if (compressionMethod === 0) entries.set(fileName, compressed);
+    if (compressionMethod === 8) entries.set(fileName, inflateRawSync(compressed));
+
+    centralDirectoryOffset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function findEndOfCentralDirectory(buffer) {
+  const minOffset = Math.max(0, buffer.length - 66000);
+  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) return offset;
+  }
+  return -1;
+}
+
+function extractOfficeXmlText(xml) {
+  return [...xml.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/g)]
+    .map((match) => decodeXmlEntities(match[1]))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function decodeXmlEntities(value) {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function extractPdfText(buffer) {
+  return [...buffer.toString('latin1').matchAll(/\(([^()]*)\)\s*Tj/g)]
+    .map((match) => match[1].replace(/\\([nrtbf()\\])/g, '$1'))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function generateEcoDocumentWithOpenAi(payload) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -172,6 +368,7 @@ ${payload.corrections}`
 Источники информации:
 ${payload.sources}`;
 
+  const memoryContext = payload.memoryContext ? `\n\nДолговременная память Цэпика:\n${payload.memoryContext}` : '';
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -187,7 +384,8 @@ ${payload.sources}`;
           content:
             'Ты русскоязычный разработчик экологической документации. ' +
             'Пиши структурированный Markdown, уточняй недостающие исходные данные, ' +
-            'не выдумывай числовые показатели и нормативные реквизиты без источников.',
+            'не выдумывай числовые показатели и нормативные реквизиты без источников.' +
+            memoryContext,
         },
         {
           role: 'user',
@@ -231,9 +429,84 @@ app.post('/api/docs', async (req, res, next) => {
   }
 });
 
+app.get('/api/memory', async (req, res, next) => {
+  try {
+    const memory = await readUserMemory(userMemoryPath);
+    const section = typeof req.query.section === 'string' ? req.query.section : '';
+    if (section) {
+      if (!['userPreferences', 'organizations', 'savedInstructions'].includes(section)) {
+        res.status(400);
+        throw new Error('Неизвестный раздел памяти');
+      }
+      res.json(memory[section]);
+      return;
+    }
+    res.json(memory);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/memory/save', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Некорректный запрос памяти');
+
+    const result = {};
+    if (typeof body.text === 'string' && body.text.trim()) {
+      const saved = await saveInstruction(userMemoryPath, body.text);
+      result.instruction = saved.instruction;
+      result.created = saved.created;
+    }
+
+    const preferences = isRecord(body.userPreferences)
+      ? body.userPreferences
+      : isRecord(body.preferences)
+        ? body.preferences
+        : null;
+    if (preferences) {
+      const saved = await saveUserPreferences(userMemoryPath, preferences);
+      result.userPreferences = saved.userPreferences;
+    }
+
+    if (!Object.keys(result).length) throw new Error('Передайте text или userPreferences');
+    result.memory = await readUserMemory(userMemoryPath);
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.post('/api/memory/organization', async (req, res, next) => {
+  try {
+    const body = req.body;
+    if (!isRecord(body)) throw new Error('Некорректный запрос организации');
+    const organizationBody = isRecord(body.organization) ? body.organization : body;
+    const result = await saveOrganization(userMemoryPath, organizationBody);
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.delete('/api/memory/instruction/:id', async (req, res, next) => {
+  try {
+    const result = await deleteInstruction(userMemoryPath, req.params.id);
+    if (!result.deleted) {
+      res.status(404);
+      throw new Error('Инструкция не найдена');
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/agent/start', async (_req, res, next) => {
   try {
-    const project = createAgentProject();
+    const project = createAgentProject(Date.now(), await readUserMemory(userMemoryPath));
     await updateAgentProjects(agentProjectsPath, (projects) => {
       projects.push(project);
       return project;
@@ -247,7 +520,7 @@ app.post('/api/agent/start', async (_req, res, next) => {
 app.post('/api/agent/select', async (req, res, next) => {
   try {
     const body = req.body;
-    if (!isRecord(body)) throw new Error('Invalid agent selection');
+    if (!isRecord(body)) throw new Error('Некорректный запрос Цэпика');
 
     const projectId = requireString(body.projectId, 'projectId');
     const answer = requireString(body.answer, 'answer');
@@ -255,16 +528,98 @@ app.post('/api/agent/select', async (req, res, next) => {
     const project = await updateAgentProjects(agentProjectsPath, (projects) => {
       const found = projects.find((item) => item.id === projectId);
       if (!found) {
-        const error = new Error('Agent project not found');
+        const error = new Error('Проект Цэпика не найден');
         error.statusCode = 404;
         throw error;
       }
-      return selectAgentAnswer(found, answer);
+      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, docsPath, memoryPath: userMemoryPath });
     });
 
     res.json(serializeAgentProject(project));
   } catch (error) {
     res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+app.post('/api/agent/upload', async (req, res, next) => {
+  try {
+    const { fields, files } = await parseMultipartFormData(req);
+    const projectId = requireString(fields.projectId, 'projectId');
+    const file = files.file;
+    if (!file) throw new Error('Необходимо выбрать файл для загрузки');
+
+    const text = extractUploadedText(file);
+    const charCount = [...text].length;
+    const now = Date.now();
+    const project = await updateAgentProjects(agentProjectsPath, (projects) => {
+      const found = projects.find((item) => item.id === projectId);
+      if (!found) {
+        const error = new Error('Проект Цэпика не найден');
+        error.statusCode = 404;
+        throw error;
+      }
+
+      const uploads = Array.isArray(found.extractedData.uploads) ? found.extractedData.uploads : [];
+      found.extractedData.uploads = [
+        ...uploads,
+        {
+          fileName: file.filename,
+          mimeType: file.mimeType,
+          charCount,
+          text,
+          uploadedAt: now,
+        },
+      ];
+      found.history.push({
+        id: `agent-${found.history.length + 1}`,
+        role: 'agent',
+        text: `Файл «${file.filename}» загружен, извлечено ${charCount} символов.`,
+        createdAt: now,
+      });
+      found.updatedAt = now;
+      return found;
+    });
+
+    res.json({
+      project: serializeAgentProject(project),
+      fileName: file.filename,
+      charCount,
+      text,
+    });
+  } catch (error) {
+    res.status(error.statusCode ?? 400);
+    next(error);
+  }
+});
+
+
+app.get('/api/agent/files/:projectId/:fileName', async (req, res, next) => {
+  try {
+    const projects = await readAgentProjects(agentProjectsPath);
+    const project = projects.find((item) => item.id === req.params.projectId);
+    if (!project) {
+      res.status(404);
+      throw new Error('Проект Цэпика не найден');
+    }
+
+    const files = project.extractedData?.code112?.files;
+    const requestedFileName = path.basename(req.params.fileName);
+    const file = files && Object.values(files).find((item) => item.fileName === requestedFileName);
+    if (!file || typeof file.path !== 'string') {
+      res.status(404);
+      throw new Error('Файл Цэпика не найден');
+    }
+
+    const resolvedPath = path.resolve(file.path);
+    const resolvedRoot = path.resolve(agentOutputDir);
+    if (!resolvedPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+      res.status(400);
+      throw new Error('Некорректный путь к файлу Цэпика');
+    }
+
+    res.download(resolvedPath, requestedFileName);
+  } catch (error) {
     next(error);
   }
 });
@@ -283,7 +638,7 @@ app.get('/api/agent/state/:projectId', async (req, res, next) => {
     const project = projects.find((item) => item.id === req.params.projectId);
     if (!project) {
       res.status(404);
-      throw new Error('Agent project not found');
+      throw new Error('Проект Цэпика не найден');
     }
     res.json(serializeAgentProject(project));
   } catch (error) {
@@ -315,6 +670,7 @@ app.post('/api/ai/eco-agent', async (req, res, next) => {
         sources,
         draft,
         corrections,
+        memoryContext: buildMemorySystemPrompt(await readUserMemory(userMemoryPath)),
       }),
     });
   } catch (error) {

@@ -1,19 +1,54 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bot, CheckCircle2, FolderClock, Play, RefreshCw, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Bot, CheckCircle2, FolderClock, Paperclip, Play, RefreshCw, Send, Sparkles } from 'lucide-react';
 import {
   fetchAgentProjectState,
   fetchAgentProjects,
   selectAgentAnswer,
   startAgentProject,
+  uploadAgentFile,
 } from '../api/agentApi';
+import { useDocStore } from '../store/useDocStore';
 import type { AgentProject } from '../types';
+
+function renderMessageText(text: string) {
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let match = linkPattern.exec(text);
+
+  while (match) {
+    const [fullMatch, label, href] = match;
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    parts.push(
+      <a
+        href={href}
+        key={`${href}-${match.index}`}
+        rel={href.startsWith('http') ? 'noreferrer' : undefined}
+        target={href.startsWith('http') ? '_blank' : undefined}
+      >
+        {label}
+      </a>
+    );
+    lastIndex = match.index + fullMatch.length;
+    match = linkPattern.exec(text);
+  }
+
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts.length ? parts : text;
+}
 
 export function ChatWizard() {
   const [project, setProject] = useState<AgentProject | null>(null);
   const [projects, setProjects] = useState<AgentProject[]>([]);
+  const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
+  const [isFileUploading, setIsFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const loadDocs = useDocStore((state) => state.loadDocs);
+  const availableOptions = useMemo(() => project?.availableOptions ?? [], [project?.availableOptions]);
 
   const messages = useMemo(
     () =>
@@ -51,13 +86,43 @@ export function ChatWizard() {
     };
   }, []);
 
+  useEffect(() => {
+    console.info('[ChatWizard] state', {
+      projectId: project?.id ?? null,
+      status: project?.status ?? null,
+      packageCode: project?.packageCode ?? null,
+      availableOptions: availableOptions.map((option) => option.key),
+      isLoading,
+      isSelecting,
+      isFileUploading,
+    });
+  }, [
+    availableOptions,
+    isFileUploading,
+    isLoading,
+    isSelecting,
+    project?.id,
+    project?.packageCode,
+    project?.status,
+  ]);
+
+  function updateProjectList(updated: AgentProject) {
+    console.info('[ChatWizard] updateProjectList', {
+      projectId: updated.id,
+      status: updated.status,
+      packageCode: updated.packageCode ?? null,
+      availableOptions: updated.availableOptions.map((option) => option.key),
+    });
+    setProject(updated);
+    setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+  }
+
   async function handleStartProject() {
     setIsLoading(true);
     setError(null);
     try {
-      const started = await startAgentProject();
-      setProject(started);
-      setProjects((current) => [started, ...current.filter((item) => item.id !== started.id)]);
+      console.info('[ChatWizard] startProject');
+      updateProjectList(await startAgentProject());
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось начать проект Цэпика');
     } finally {
@@ -69,7 +134,8 @@ export function ChatWizard() {
     setIsLoading(true);
     setError(null);
     try {
-      setProject(await fetchAgentProjectState(projectId));
+      console.info('[ChatWizard] resumeProject', { projectId });
+      updateProjectList(await fetchAgentProjectState(projectId));
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось открыть проект Цэпика');
     } finally {
@@ -83,15 +149,48 @@ export function ChatWizard() {
     setIsSelecting(true);
     setError(null);
     try {
-      const updated = await selectAgentAnswer(project.id, answer);
-      setProject(updated);
-      setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+      console.info('[ChatWizard] selectAnswer', { projectId: project.id, answer });
+      updateProjectList(await selectAgentAnswer(project.id, answer));
+      await loadDocs({ silent: true });
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
     } finally {
       setIsSelecting(false);
     }
   }
+
+  async function handleSend() {
+    const answer = inputText.trim();
+    if (!answer || !project || isSelecting || isFileUploading) return;
+
+    setInputText('');
+    await handleSelect(answer);
+  }
+
+  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !project) return;
+
+    setIsFileUploading(true);
+    setError(null);
+    try {
+      console.info('[ChatWizard] uploadFile:start', {
+        projectId: project.id,
+        fileName: file.name,
+        fileSize: file.size,
+      });
+      const result = await uploadAgentFile(project.id, file);
+      updateProjectList(result.project);
+      await loadDocs({ silent: true });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Не удалось обработать файл');
+    } finally {
+      setIsFileUploading(false);
+      event.target.value = '';
+    }
+  }
+
+  const isInputDisabled = !project || isLoading || isSelecting || isFileUploading;
 
   return (
     <aside className="eco-agent chat-wizard">
@@ -163,7 +262,7 @@ export function ChatWizard() {
       <div className="eco-agent-messages">
         {messages.map((message) => (
           <div className={`eco-agent-message ${message.role}`} key={message.id}>
-            {message.text}
+            {renderMessageText(message.text)}
           </div>
         ))}
         {project?.status === 'package_selected' && (
@@ -175,21 +274,23 @@ export function ChatWizard() {
             </div>
           </div>
         )}
+        {isSelecting && <div className="chat-status">Цэпик печатает...</div>}
+        {isFileUploading && <div className="chat-status">Загрузка файла...</div>}
       </div>
 
       {error && <div className="editor-error">{error}</div>}
 
       <div className="eco-agent-input chat-options-panel">
-        {project?.availableOptions.length ? (
+        {availableOptions.length ? (
           <>
             <div className="chat-section-title">Выберите вариант ответа</div>
             <div className="chat-option-grid">
-              {project.availableOptions.map((option) => (
+              {availableOptions.map((option) => (
                 <button
                   className="btn btn-secondary btn-sm chat-option"
                   key={option.key}
                   type="button"
-                  disabled={isSelecting}
+                  disabled={isSelecting || isFileUploading}
                   onClick={() => void handleSelect(option.key)}
                 >
                   {option.label}
@@ -199,11 +300,50 @@ export function ChatWizard() {
           </>
         ) : project?.status === 'package_selected' ? (
           <div className="chat-finished">
-            Пакет выбран. На следующем этапе Цэпик сможет принимать файлы и источники.
+            Пакет выбран. Прикрепите файл или отправьте источники сообщением.
           </div>
         ) : (
           <div className="chat-finished">Нажмите «Новый проект», чтобы начать диалог.</div>
         )}
+
+        <div className="chat-input-row">
+          <input
+            ref={fileInputRef}
+            className="chat-file-input"
+            type="file"
+            onChange={(event) => void handleFileUpload(event)}
+            accept=".docx,.xlsx,.pdf,.jpg,.jpeg,.png,.txt,.csv,.md"
+          />
+          <button
+            className="btn btn-secondary btn-sm chat-file-button"
+            type="button"
+            disabled={isInputDisabled}
+            onClick={() => fileInputRef.current?.click()}
+            title="Прикрепить файл"
+          >
+            <Paperclip size={16} />
+          </button>
+          <input
+            className="chat-text-input"
+            type="text"
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void handleSend();
+            }}
+            placeholder={project ? 'Введите сообщение или вариант ответа...' : 'Создайте или откройте проект'}
+            disabled={isInputDisabled}
+          />
+          <button
+            className="btn btn-primary btn-sm chat-send-button"
+            type="button"
+            disabled={isInputDisabled || !inputText.trim()}
+            onClick={() => void handleSend()}
+          >
+            <Send size={16} />
+            <span>Отправить</span>
+          </button>
+        </div>
       </div>
     </aside>
   );

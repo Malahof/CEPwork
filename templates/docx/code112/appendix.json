@@ -1,0 +1,18 @@
+{
+  "key": "appendix",
+  "title": "Приложение к акту инвентаризации",
+  "requiredFields": [
+    "Дата_акта",
+    "Название_организации",
+    "Отходы"
+  ],
+  "repeatingBlocks": [
+    {
+      "placeholder": "[строка_отхода]",
+      "dataPath": "appendixRows",
+      "options": {
+        "blockType": "tableRow"
+      }
+    }
+  ]
+}
