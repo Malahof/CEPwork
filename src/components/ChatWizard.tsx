@@ -11,6 +11,10 @@ import {
 import { useDocStore } from '../store/useDocStore';
 import type { AgentProject } from '../types';
 
+interface ChatWizardProps {
+  onGenerationStart?: () => void;
+}
+
 function renderMessageText(text: string) {
   const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
   const parts: ReactNode[] = [];
@@ -38,7 +42,7 @@ function renderMessageText(text: string) {
   return parts.length ? parts : text;
 }
 
-export function ChatWizard() {
+export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
   const [project, setProject] = useState<AgentProject | null>(null);
   const [projects, setProjects] = useState<AgentProject[]>([]);
   const [inputText, setInputText] = useState('');
@@ -47,6 +51,7 @@ export function ChatWizard() {
   const [isFileUploading, setIsFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const loadDocs = useDocStore((state) => state.loadDocs);
   const availableOptions = useMemo(() => project?.availableOptions ?? [], [project?.availableOptions]);
 
@@ -56,7 +61,7 @@ export function ChatWizard() {
         {
           id: 'cepik-welcome',
           role: 'agent' as const,
-          text: 'Цэпик ожидает ваших указаний для начала работы.',
+          text: 'Здравствуйте. Я Цэпик, помогу подготовить экологические документы. Нажмите «Новый проект», чтобы начать.',
           createdAt: 0,
         },
       ],
@@ -85,6 +90,12 @@ export function ChatWizard() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [messages, project?.status, isSelecting, isFileUploading]);
 
   useEffect(() => {
     console.info('[ChatWizard] state', {
@@ -150,6 +161,7 @@ export function ChatWizard() {
     setError(null);
     try {
       console.info('[ChatWizard] selectAnswer', { projectId: project.id, answer });
+      if (answer === 'generateAll' || answer === 'createDraft') onGenerationStart?.();
       updateProjectList(await selectAgentAnswer(project.id, answer));
       await loadDocs({ silent: true });
     } catch (error) {
@@ -259,7 +271,7 @@ export function ChatWizard() {
         </section>
       )}
 
-      <div className="eco-agent-messages">
+      <div className="eco-agent-messages" ref={messagesRef}>
         {messages.map((message) => (
           <div className={`eco-agent-message ${message.role}`} key={message.id}>
             {renderMessageText(message.text)}

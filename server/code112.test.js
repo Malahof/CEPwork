@@ -242,8 +242,11 @@ test('code112 adds generated documents to docs tree and activates the title page
   await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory: null });
 
   const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  const inProgressFolder = snapshot.folders.find((item) => item.id === 'in-progress');
+  assert.equal(inProgressFolder.title, 'В разработке');
   const folder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
   assert.equal(folder.title, 'Акт инвентаризации — ООО ДокДерево');
+  assert.equal(folder.parentId, 'in-progress');
   const pages = snapshot.pages.filter((item) => item.parentId === folder.id);
   assert.equal(pages.length, 5);
   assert.equal(snapshot.activePageId, 'agent-code112-docs-tree-code112-titleAct');

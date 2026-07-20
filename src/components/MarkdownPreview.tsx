@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSlug from 'rehype-slug';
@@ -13,9 +14,10 @@ interface MarkdownPreviewProps {
   title: string;
   pages: DocPage[];
   folders: DocFolder[];
+  headerStart?: ReactNode;
 }
 
-export function MarkdownPreview({ content, title, pages, folders }: MarkdownPreviewProps) {
+export function MarkdownPreview({ content, title, pages, folders, headerStart }: MarkdownPreviewProps) {
   const previewRef = useRef<HTMLDivElement>(null);
   const [docxLoading, setDocxLoading] = useState(false);
 
@@ -44,6 +46,7 @@ export function MarkdownPreview({ content, title, pages, folders }: MarkdownPrev
   return (
     <div className="preview-pane">
       <div className="preview-header">
+        {headerStart}
         <span className="preview-label">Предпросмотр</span>
         <div className="preview-actions">
           <button className="btn btn-secondary btn-sm" onClick={handleExportHtml}>

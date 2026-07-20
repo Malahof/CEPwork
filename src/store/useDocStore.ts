@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { fetchDocs, saveDocs } from '../api/docsApi';
-import { defaultDocsSnapshot } from '../data/defaultDocs';
+import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../data/defaultDocs';
 import type { DocsSnapshot, DocPage, DocFolder } from '../types';
 
 interface DocState {
@@ -54,34 +54,11 @@ function docsSnapshotFromState(state: DocState): DocsSnapshot {
 function snapshotWithDefaultTemplates(snapshot: DocsSnapshot): DocsSnapshot {
   const withoutLegacySamples: DocsSnapshot = {
     pages: snapshot.pages.filter((page) => !legacySampleTemplatePageIds.has(page.id)),
-    folders: snapshot.folders.filter((folder) => folder.id !== 'templates'),
+    folders: snapshot.folders,
     activePageId: legacySampleTemplatePageIds.has(snapshot.activePageId ?? '') ? 'welcome' : snapshot.activePageId,
   };
-  const defaultTemplates = defaultDocsSnapshot.pages.filter((page) => page.isTemplate);
-  const defaultTemplateById = new Map(defaultTemplates.map((page) => [page.id, page]));
-  const pages = withoutLegacySamples.pages.map((page) => {
-    const defaultTemplate = defaultTemplateById.get(page.id);
-    if (!defaultTemplate) return page;
 
-    return {
-      ...defaultTemplate,
-      title: page.title,
-      parentId: page.parentId,
-      order: page.order,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
-    };
-  });
-  const existingPageIds = new Set(pages.map((page) => page.id));
-  const missingTemplates = defaultTemplates.filter((page) => !existingPageIds.has(page.id));
-  const templateFolder = defaultDocsSnapshot.folders.find((folder) => folder.id === 'templates');
-  const hasTemplateFolder = withoutLegacySamples.folders.some((folder) => folder.id === 'templates');
-
-  return {
-    pages: [...pages, ...missingTemplates],
-    folders: hasTemplateFolder || !templateFolder ? withoutLegacySamples.folders : [...withoutLegacySamples.folders, templateFolder],
-    activePageId: withoutLegacySamples.activePageId,
-  };
+  return ensureDefaultDocsStructure(withoutLegacySamples);
 }
 
 function renderTemplate(content: string, values: Record<string, string>): string {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../memory.js';
-import { defaultDocsSnapshot } from '../../defaultDocs.js';
+import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 
 export const code112FallbackMessage =
@@ -635,18 +635,25 @@ async function addGeneratedDocumentsToDocsTree(project, state, documents, data, 
   });
 
   const snapshot = await readDocsSnapshot(docsPath);
+  ensureFolder(snapshot, {
+    id: 'in-progress',
+    title: 'В разработке',
+    parentId: null,
+    order: 2,
+    isExpanded: true,
+  });
   const folderId = `agent-${project.id}-code112`;
   const folderTitle = data.organizationName
     ? `Акт инвентаризации — ${data.organizationName}`
     : 'Акт инвентаризации';
-  const folderOrder = nextOrder(snapshot.folders.filter((folder) => folder.parentId === null));
+  const folderOrder = nextOrder(snapshot.folders.filter((folder) => folder.parentId === 'in-progress'));
   const existingFolderIndex = snapshot.folders.findIndex((folder) => folder.id === folderId);
 
   if (existingFolderIndex === -1) {
     snapshot.folders.push({
       id: folderId,
       title: folderTitle,
-      parentId: null,
+      parentId: 'in-progress',
       order: folderOrder,
       isExpanded: true,
     });
@@ -654,6 +661,7 @@ async function addGeneratedDocumentsToDocsTree(project, state, documents, data, 
     snapshot.folders[existingFolderIndex] = {
       ...snapshot.folders[existingFolderIndex],
       title: folderTitle,
+      parentId: 'in-progress',
       isExpanded: true,
     };
   }
@@ -708,10 +716,23 @@ async function writeDocsSnapshot(docsPath, snapshot) {
 }
 
 function normalizeDocsSnapshot(value) {
-  return {
+  return ensureDefaultDocsStructure({
     pages: Array.isArray(value?.pages) ? value.pages.map(normalizeDocPage) : [],
     folders: Array.isArray(value?.folders) ? value.folders.map(normalizeDocFolder) : [],
     activePageId: typeof value?.activePageId === 'string' || value?.activePageId === null ? value.activePageId : null,
+  });
+}
+
+function ensureFolder(snapshot, folder) {
+  const index = snapshot.folders.findIndex((item) => item.id === folder.id);
+  if (index === -1) {
+    snapshot.folders.push(folder);
+    return;
+  }
+  snapshot.folders[index] = {
+    ...snapshot.folders[index],
+    ...folder,
+    isExpanded: snapshot.folders[index].isExpanded,
   };
 }
 

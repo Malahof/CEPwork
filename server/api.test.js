@@ -42,7 +42,11 @@ test('GET /api/docs returns and persists the default snapshot', async () => {
   assert.ok(Array.isArray(snapshot.folders));
   assert.ok(snapshot.pages.some((page) => page.id === 'welcome'));
   assert.equal(snapshot.pages.some((page) => page.id === 'template-meeting-notes'), false);
-  assert.equal(snapshot.folders.some((folder) => folder.id === 'templates'), false);
+  assert.ok(snapshot.folders.some((folder) => folder.id === 'getting-started' && folder.title === 'Руководство'));
+  assert.ok(snapshot.folders.some((folder) => folder.id === 'templates' && folder.title === 'Шаблоны'));
+  assert.ok(snapshot.folders.some((folder) => folder.id === 'templates-inventory-act'));
+  assert.ok(snapshot.folders.some((folder) => folder.id === 'in-progress' && folder.title === 'В разработке'));
+  assert.ok(snapshot.folders.some((folder) => folder.id === 'archive' && folder.title === 'Архив'));
 
   const persisted = JSON.parse(await readFile(process.env.DOCS_DATA_PATH, 'utf8'));
   assert.equal(persisted.activePageId, snapshot.activePageId);
@@ -88,13 +92,16 @@ test('POST /api/docs stores a Unicode document snapshot', async () => {
     body: JSON.stringify(snapshot),
   });
   assert.equal(saveResponse.status, 200);
-  assert.deepEqual(await saveResponse.json(), snapshot);
+  const savedSnapshot = await saveResponse.json();
+  assert.ok(savedSnapshot.pages.some((page) => page.id === 'unicode-page'));
+  assert.ok(savedSnapshot.folders.some((folder) => folder.id === 'templates'));
 
   const loadResponse = await fetch(`${baseUrl}/api/docs`);
   assert.equal(loadResponse.status, 200);
   const loaded = await loadResponse.json();
-  assert.equal(loaded.pages[0].title, 'Тест Юникод 漢字 🚀');
-  assert.equal(loaded.pages[0].templateVariables[0].defaultValue, 'Склад №1');
+  const unicodePage = loaded.pages.find((page) => page.id === 'unicode-page');
+  assert.equal(unicodePage.title, 'Тест Юникод 漢字 🚀');
+  assert.equal(unicodePage.templateVariables[0].defaultValue, 'Склад №1');
 });
 
 test('POST /api/docs rejects invalid snapshots', async () => {
