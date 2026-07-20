@@ -4,7 +4,7 @@ import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
-import { defaultDocsSnapshot } from './defaultDocs.js';
+import { defaultDocsSnapshot, ensureDefaultDocsStructure } from './defaultDocs.js';
 import {
   createAgentProject,
   listOpenProjects,
@@ -78,17 +78,17 @@ function normalizeDocsSnapshot(value) {
   const pages = value.pages
     .map(normalizePage)
     .filter((page) => !legacySampleTemplatePageIds.has(page.id));
-  const folders = value.folders.map(normalizeFolder).filter((folder) => folder.id !== 'templates');
+  const folders = value.folders.map(normalizeFolder);
   const activePageId =
     typeof value.activePageId === 'string' || value.activePageId === null
       ? value.activePageId
       : null;
 
-  return {
+  return ensureDefaultDocsStructure({
     pages,
     folders,
     activePageId: activePageId && legacySampleTemplatePageIds.has(activePageId) ? 'welcome' : activePageId,
-  };
+  });
 }
 
 function normalizePage(value) {
