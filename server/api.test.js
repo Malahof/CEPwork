@@ -45,6 +45,19 @@ test('GET /api/docs returns and persists the default snapshot', async () => {
   assert.ok(snapshot.folders.some((folder) => folder.id === 'getting-started' && folder.title === 'Руководство'));
   assert.ok(snapshot.folders.some((folder) => folder.id === 'templates' && folder.title === 'Шаблоны'));
   assert.ok(snapshot.folders.some((folder) => folder.id === 'templates-inventory-act'));
+  assert.deepEqual(
+    snapshot.pages
+      .filter((page) => page.parentId === 'templates-inventory-act')
+      .sort((a, b) => a.order - b.order)
+      .map((page) => page.title),
+    [
+      'Титул акта (шаблон)',
+      'Приложение к акту (шаблон)',
+      'Источники образования отходов (шаблон)',
+      'Образование отходов (шаблон)',
+      'Перечень мероприятий (шаблон)',
+    ]
+  );
   assert.ok(snapshot.folders.some((folder) => folder.id === 'in-progress' && folder.title === 'В разработке'));
   assert.ok(snapshot.folders.some((folder) => folder.id === 'archive' && folder.title === 'Архив'));
 

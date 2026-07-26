@@ -126,6 +126,7 @@ export function EditorPage() {
                   <MarkdownEditor
                     value={activePage.content}
                     onChange={(content) => updatePage(activePage.id, { content })}
+                    readOnly={activePage.isTemplate}
                   />
                 ) : (
                   <LoadingState
