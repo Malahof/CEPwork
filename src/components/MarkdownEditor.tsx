@@ -18,6 +18,7 @@ import {
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
 }
 
 interface ToolbarAction {
@@ -141,11 +142,12 @@ function insertAtCursor(
   return { text, cursorOffset: start + insert.length };
 }
 
-export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
+export function MarkdownEditor({ value, onChange, readOnly = false }: MarkdownEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleToolbarClick = useCallback(
     (action: ToolbarAction) => {
+      if (readOnly) return;
       const ta = textareaRef.current;
       if (!ta) return;
       const { text, cursorOffset } = action.action(ta);
@@ -155,11 +157,12 @@ export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
         ta.setSelectionRange(cursorOffset, cursorOffset);
       });
     },
-    [onChange]
+    [onChange, readOnly]
   );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (readOnly) return;
       const ta = textareaRef.current;
       if (!ta) return;
 
@@ -190,7 +193,7 @@ export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
         });
       }
     },
-    [onChange]
+    [onChange, readOnly]
   );
 
   return (
@@ -201,19 +204,24 @@ export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
             key={i}
             className="toolbar-btn"
             title={action.title}
+            disabled={readOnly}
             onClick={() => handleToolbarClick(action)}
           >
             {action.icon}
           </button>
         ))}
       </div>
+      {readOnly && <div className="editor-readonly-banner">Шаблон доступен только для чтения. Метки можно копировать.</div>}
       <textarea
         ref={textareaRef}
         className="editor-textarea"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          if (!readOnly) onChange(e.target.value);
+        }}
         onKeyDown={handleKeyDown}
         placeholder="Начните писать в Markdown..."
+        readOnly={readOnly}
         spellCheck={false}
       />
     </div>

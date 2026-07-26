@@ -15,7 +15,7 @@ import {
   Check,
 } from 'lucide-react';
 import { useDocStore } from '../store/useDocStore';
-import type { DocFolder } from '../types';
+import type { DocFolder, DocPage } from '../types';
 
 export function Sidebar() {
   const {
@@ -169,22 +169,22 @@ export function Sidebar() {
         {folder.isExpanded && (
           <div className="folder-children">
             {childFolders.map((cf) => renderFolder(cf))}
-            {childPages.map((page) => renderPageItem(page.id, page.title))}
+            {childPages.map((page) => renderPageItem(page))}
           </div>
         )}
       </div>
     );
   }
 
-  function renderPageItem(id: string, title: string) {
-    const isActive = activePageId === id;
-    const isEditing = editingId === id;
+  function renderPageItem(page: DocPage) {
+    const isActive = activePageId === page.id;
+    const isEditing = editingId === page.id;
 
     return (
       <div
-        key={id}
+        key={page.id}
         className={`sidebar-item page-item ${isActive ? 'active' : ''}`}
-        onClick={() => setActivePage(id)}
+        onClick={() => setActivePage(page.id)}
       >
         <span className="item-icon">
           <FileText size={16} />
@@ -208,16 +208,16 @@ export function Sidebar() {
             autoFocus
           />
         ) : (
-          <span className="item-title">{title}</span>
+          <span className="item-title">{page.title}</span>
         )}
         <span className="item-actions">
-          {!isEditing && (
+          {!isEditing && !page.isTemplate && (
             <button
               className="icon-btn"
               title="Переименовать"
               onClick={(e) => {
                 e.stopPropagation();
-                startEditing(id, title);
+                startEditing(page.id, page.title);
               }}
             >
               <Edit3 size={13} />
@@ -235,16 +235,18 @@ export function Sidebar() {
               <Check size={13} />
             </button>
           )}
-          <button
-            className="icon-btn danger"
-            title="Удалить"
-            onClick={(e) => {
-              e.stopPropagation();
-              deletePage(id);
-            }}
-          >
-            <Trash2 size={13} />
-          </button>
+          {!page.isTemplate && (
+            <button
+              className="icon-btn danger"
+              title="Удалить"
+              onClick={(e) => {
+                e.stopPropagation();
+                deletePage(page.id);
+              }}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
         </span>
       </div>
     );
@@ -304,7 +306,7 @@ export function Sidebar() {
 
       <nav className="sidebar-nav">
         {rootFolders.map((folder) => renderFolder(folder))}
-        {rootPages.map((page) => renderPageItem(page.id, page.title))}
+        {rootPages.map((page) => renderPageItem(page))}
         {filteredPages.length === 0 && searchQuery && (
           <div className="sidebar-empty">Ничего не найдено</div>
         )}

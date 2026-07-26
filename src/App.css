@@ -844,6 +844,24 @@
   background: #e0e0ea;
 }
 
+.toolbar-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.toolbar-btn:disabled:hover {
+  background: transparent;
+  color: #666;
+}
+
+.editor-readonly-banner {
+  padding: 8px 20px;
+  border-bottom: 1px solid #e8e8f0;
+  background: #f8f9ff;
+  color: #4b4f6b;
+  font-size: 13px;
+}
+
 /* ===== Editor Textarea ===== */
 .editor-textarea {
   flex: 1;
@@ -861,6 +879,10 @@
 
 .editor-textarea::placeholder {
   color: #bbb;
+}
+
+.editor-textarea:read-only {
+  background: #fff;
 }
 
 /* ===== Preview ===== */

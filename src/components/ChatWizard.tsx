@@ -61,7 +61,7 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
         {
           id: 'cepik-welcome',
           role: 'agent' as const,
-          text: 'Здравствуйте. Я Цэпик, помогу подготовить экологические документы. Нажмите «Новый проект», чтобы начать.',
+          text: 'Здравствуйте. Я Цэпик, помогу подготовить экологические документы. Нажмите «Новый проект» или отправьте первое сообщение — я начну проект автоматически.',
           createdAt: 0,
         },
       ],
@@ -128,17 +128,24 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
     setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
   }
 
-  async function handleStartProject() {
+  async function startProject() {
     setIsLoading(true);
     setError(null);
     try {
       console.info('[ChatWizard] startProject');
-      updateProjectList(await startAgentProject());
+      const startedProject = await startAgentProject();
+      updateProjectList(startedProject);
+      return startedProject;
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Не удалось начать проект Цэпика');
+      return null;
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function handleStartProject() {
+    await startProject();
   }
 
   async function handleResumeProject(projectId: string) {
@@ -173,25 +180,44 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
 
   async function handleSend() {
     const answer = inputText.trim();
-    if (!answer || !project || isSelecting || isFileUploading) return;
+    if (!answer || isLoading || isSelecting || isFileUploading) return;
 
     setInputText('');
-    await handleSelect(answer);
+    const targetProject = project ?? (await startProject());
+    if (!targetProject) {
+      setInputText(answer);
+      return;
+    }
+
+    setIsSelecting(true);
+    setError(null);
+    try {
+      console.info('[ChatWizard] sendAnswer', { projectId: targetProject.id, answer });
+      const updated = await selectAgentAnswer(targetProject.id, answer);
+      updateProjectList(updated);
+      await loadDocs({ silent: true });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
+    } finally {
+      setIsSelecting(false);
+    }
   }
 
   async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || !project) return;
+    if (!file || isLoading || isSelecting || isFileUploading) return;
 
     setIsFileUploading(true);
     setError(null);
     try {
+      const targetProject = project ?? (await startAgentProject());
+      updateProjectList(targetProject);
       console.info('[ChatWizard] uploadFile:start', {
-        projectId: project.id,
+        projectId: targetProject.id,
         fileName: file.name,
         fileSize: file.size,
       });
-      const result = await uploadAgentFile(project.id, file);
+      const result = await uploadAgentFile(targetProject.id, file);
       updateProjectList(result.project);
       await loadDocs({ silent: true });
     } catch (error) {
@@ -202,7 +228,7 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
     }
   }
 
-  const isInputDisabled = !project || isLoading || isSelecting || isFileUploading;
+  const isInputDisabled = isLoading || isSelecting || isFileUploading;
 
   return (
     <aside className="eco-agent chat-wizard">
@@ -315,7 +341,9 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
             Пакет выбран. Прикрепите файл или отправьте источники сообщением.
           </div>
         ) : (
-          <div className="chat-finished">Нажмите «Новый проект», чтобы начать диалог.</div>
+          <div className="chat-finished">
+            Нажмите «Новый проект» или отправьте первое сообщение — Цэпик начнёт проект автоматически.
+          </div>
         )}
 
         <div className="chat-input-row">
@@ -343,7 +371,7 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
             onKeyDown={(event) => {
               if (event.key === 'Enter') void handleSend();
             }}
-            placeholder={project ? 'Введите сообщение или вариант ответа...' : 'Создайте или откройте проект'}
+            placeholder="Введите сообщение или вариант ответа..."
             disabled={isInputDisabled}
           />
           <button
