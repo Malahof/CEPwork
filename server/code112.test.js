@@ -34,6 +34,21 @@ test('code112 parses manual fields and waste rows', () => {
   assert.equal(parsed.wastes[0].handling, 'обезвреживание');
 });
 
+test('code112 ignores project page helper lines while syncing manual fields', () => {
+  const parsed = parseManualInput([
+    'Файл DOCX: `templates/docx/inventory_act/appendix_template.docx`',
+    'Название организации: ООО Ромашка manual',
+    'Дата акта: [дата_акта]',
+    '`Отход: код;наименование;класс;количество;единица;способ обращения;источник;физическое состояние`',
+    'Итоги: [сумма_кол4], [сумма_кол5], [сумма_кол6]',
+  ].join('\n'), { ignoreTemplateInstructions: true });
+
+  assert.deepEqual(parsed.fields, {
+    Название_организации: 'ООО Ромашка manual',
+  });
+  assert.deepEqual(parsed.wastes, []);
+});
+
 test('code112 parses manual commission roles and names', () => {
   const members = parseCommission('председатель Сидоров С.С.; инженер Иванов И.И.; эколог Петров П.П.');
 
@@ -221,6 +236,18 @@ test('code112 adds generated documents to docs tree and activates the title page
   const docsPath = path.join(tempDir, 'docs-tree.json');
 
   await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+  let snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  const initialProjectFolder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree');
+  assert.equal(initialProjectFolder.parentId, 'in-progress');
+  assert.match(initialProjectFolder.title, /Новый проект/);
+  const initialWorkFolder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
+  assert.equal(initialWorkFolder.title, 'Акт инвентаризации');
+  assert.equal(initialWorkFolder.parentId, initialProjectFolder.id);
+  const initialPages = snapshot.pages.filter((item) => item.parentId === initialWorkFolder.id);
+  assert.equal(initialPages.length, 5);
+  assert.equal(initialPages.some((page) => page.isTemplate), false);
+  assert.match(initialPages.find((page) => page.id === 'agent-code112-docs-tree-code112-appendix').content, /\[название_организации\]/);
+
   await generate(project, {
     answer: [
       'Название организации: ООО ДокДерево',
@@ -241,16 +268,22 @@ test('code112 adds generated documents to docs tree and activates the title page
   });
   await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory: null });
 
-  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
   const inProgressFolder = snapshot.folders.find((item) => item.id === 'in-progress');
   assert.equal(inProgressFolder.title, 'В разработке');
+  const projectFolder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree');
+  assert.equal(projectFolder.title, 'ООО ДокДерево');
+  assert.equal(projectFolder.parentId, 'in-progress');
   const folder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
-  assert.equal(folder.title, 'Акт инвентаризации — ООО ДокДерево');
-  assert.equal(folder.parentId, 'in-progress');
+  assert.equal(folder.title, 'Акт инвентаризации');
+  assert.equal(folder.parentId, projectFolder.id);
   const pages = snapshot.pages.filter((item) => item.parentId === folder.id);
   assert.equal(pages.length, 5);
   assert.equal(snapshot.activePageId, 'agent-code112-docs-tree-code112-titleAct');
-  assert.match(pages.find((item) => item.id === snapshot.activePageId).content, /ООО ДокДерево/);
+  const activePage = pages.find((item) => item.id === snapshot.activePageId);
+  assert.match(activePage.content, /\[название_организации\]/);
+  assert.equal(activePage.templateValues.название_организации, 'ООО ДокДерево');
+  assert.equal(pages.some((page) => page.isTemplate), false);
 });
 
 test('code112 renders exactly the entered commission member count', async () => {

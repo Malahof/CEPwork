@@ -402,7 +402,7 @@ test('код 112 starts the inventory act generator and creates five DOCX files'
 
   const { result: unknownCode, logs } = await captureConsoleLog(() => selectAgentOption(started.id, '999'));
   assert.equal(unknownCode.history.at(-2).text, unsupportedDocumentationMessage);
-  assert.deepEqual(logs[0][1], { projectId: started.id, code: '999' });
+  assert.deepEqual(logs.find((entry) => entry[0] === '[Цэпик] Запрошена нереализованная ветка')[1], { projectId: started.id, code: '999' });
 });
 
 test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {
