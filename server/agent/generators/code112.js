@@ -84,19 +84,72 @@ export async function generate(projectData, userSources = {}) {
     state.startedAt = now;
     addAgentMessage(projectData, buildStartMessage(state), now);
     for (const message of memoryMessages) addAgentMessage(projectData, message, now);
+    if (!hasOrganizationName(state)) {
+      state.awaitingOrganizationName = true;
+      askUser(projectData, organizationNameQuestion(), [], now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    state.awaitingOrganizationName = false;
     await syncCode112ProjectPages(projectData, state, docsPath, now, { activateDocumentKey: 'appendix' });
     askUser(projectData, 'С чего хотите начать?', menuOptions(), now);
     return projectData;
   }
 
-  await syncCode112ProjectPages(projectData, state, docsPath, now);
+  if (!state.activeDocument && !hasOrganizationName(state)) {
+    state.awaitingOrganizationName = true;
+  }
+
+  if (!state.awaitingOrganizationName) {
+    await syncCode112ProjectPages(projectData, state, docsPath, now);
+  }
 
   if (!answer) {
-    askUser(projectData, buildProgressMessage(state), menuOptions(), now);
+    if (state.awaitingOrganizationName) {
+      askUser(projectData, organizationNameQuestion(), [], now);
+    } else {
+      askUser(projectData, buildProgressMessage(state), menuOptions(), now);
+    }
     return projectData;
   }
 
   addUserMessage(projectData, answer, now);
+
+  if (state.awaitingOrganizationName) {
+    if (isStopAnswer(answer)) {
+      state.pausedAt = now;
+      projectData.updatedAt = now;
+      askUser(projectData, 'Работа по акту инвентаризации сохранена как «в работе». Когда вернётесь, сначала укажем название организации.', [], now);
+      return projectData;
+    }
+
+    if (isOrganizationActionAnswer(answer)) {
+      addAgentMessage(projectData, 'Сначала нужно указать название организации для акта инвентаризации.', now);
+      askUser(projectData, organizationNameQuestion(), [], now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+
+    const organizationName = extractOrganizationNameAnswer(answer) || state.data.Название_организации;
+    if (!isFilledTemplateValue(organizationName)) {
+      askUser(projectData, organizationNameQuestion(), [], now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+
+    state.data.Название_организации = organizationName;
+    state.awaitingOrganizationName = false;
+    await syncCode112ProjectPages(projectData, state, docsPath, now, { activateDocumentKey: 'appendix' });
+
+    const organizationQuestion = prepareOrganizationMemoryConfirmation(state, memory, organizationName);
+    if (organizationQuestion) {
+      askUser(projectData, organizationQuestion, confirmationOptions(), now);
+    } else {
+      askUser(projectData, 'С чего хотите начать?', menuOptions(), now);
+    }
+    projectData.updatedAt = now;
+    return projectData;
+  }
 
   const organizationConfirmation = handleOrganizationConfirmation(projectData, state, answer, memory, now);
   if (organizationConfirmation) {
@@ -185,6 +238,7 @@ export async function generate(projectData, userSources = {}) {
 export function getCode112Question(project) {
   const state = project.extractedData?.code112;
   if (!state) return null;
+  if (state.awaitingOrganizationName) return organizationNameQuestion();
   if (state.activeDocument) return `Цэпик работает над файлом: ${documentByKey.get(state.activeDocument)?.label ?? state.activeDocument}`;
   return 'К чему теперь приступить?';
 }
@@ -193,6 +247,7 @@ export function getCode112Options(project) {
   const state = project.extractedData?.code112;
   if (!state) return [];
   if (state.memory?.pendingOrganization) return confirmationOptions();
+  if (state.awaitingOrganizationName) return [];
   if (state.activeDocument) return documentWorkOptions();
   return menuOptions();
 }
@@ -529,6 +584,7 @@ function ensureGeneratorState(project, now) {
       startedAt: null,
       updatedAt: now,
       activeDocument: null,
+      awaitingOrganizationName: false,
       data: {},
       wastes: [],
       memory: {
@@ -555,6 +611,7 @@ function ensureGeneratorState(project, now) {
       ),
     };
   }
+  project.extractedData.code112.awaitingOrganizationName = Boolean(project.extractedData.code112.awaitingOrganizationName);
   return project.extractedData.code112;
 }
 
@@ -577,8 +634,13 @@ function buildStartMessage(state) {
   return [
     'Вы выбрали создание пакета документов для акта инвентаризации (код 112).',
     'Цэпик будет вести работу по пяти файлам и сохранять прогресс проекта.',
+    'Сначала укажем организацию, затем я создам папку проекта и пять редактируемых страниц.',
     buildProgressMessage(state),
   ].join('\n');
+}
+
+function organizationNameQuestion() {
+  return 'Укажите название организации, для которой разрабатывается документация.';
 }
 
 function buildProgressMessage(state) {
@@ -1164,13 +1226,63 @@ function isFillTemplateAnswer(answer) {
     && (normalized.includes('метк') || normalized.includes('прилож') || normalized.includes('шаблон'));
 }
 
+const documentAliases = new Map([
+  ['titleAct', ['титул', 'титул акта']],
+  ['appendix', ['приложение', 'приложение к акту']],
+  ['sources', ['источники', 'источники образования']],
+  ['wasteFormation', ['сведения', 'образование отходов', 'сведения о количестве']],
+  ['measures', ['перечень', 'мероприятия', 'перечень мероприятий']],
+]);
+
 function findDocument(answer) {
-  return documentByKey.get(answer) ?? documentByLabel.get(normalizeAnswer(answer));
+  const normalized = normalizeAnswer(answer);
+  const byAlias = [...documentAliases.entries()]
+    .find(([, aliases]) => aliases.some((alias) => normalized === normalizeAnswer(alias)))?.[0];
+  return documentByKey.get(answer) ?? documentByLabel.get(normalized) ?? documentByKey.get(byAlias);
 }
 
 function isStopAnswer(answer) {
   const normalized = normalizeAnswer(answer);
   return normalized === 'pause' || normalized === normalizeAnswer('Остановиться и продолжить позже') || normalized === normalizeAnswer('стоп');
+}
+
+function isOrganizationActionAnswer(answer) {
+  const normalized = normalizeAnswer(answer);
+  return Boolean(findDocument(answer))
+    || isGenerateAnswer(answer)
+    || isFillTemplateAnswer(answer)
+    || normalized === 'createdraft'
+    || normalized === normalizeAnswer('Создать черновик')
+    || normalized === 'cancel'
+    || normalized === normalizeAnswer('Отмена');
+}
+
+function extractOrganizationNameAnswer(answer) {
+  const parsed = parseManualInput(answer);
+  const explicitName = parsed.fields.Название_организации ?? parsed.fields.Организация;
+  if (isFilledTemplateValue(explicitName)) return cleanupOrganizationName(explicitName);
+
+  const match = answer.match(/(?:создадим\s+)?акт\s+инвентаризации\s+для\s+(.+)$/iu);
+  if (match) {
+    const tail = cleanupOrganizationName(match[1]);
+    const quoted = tail.match(/[«"“]([^»"”]+)[»"”]/u);
+    if (/^(?:ооо|зао|оао|ао|ип|общество|компания)(?:\s|$)/iu.test(tail)) return tail;
+    return cleanupOrganizationName(quoted?.[1] ?? tail);
+  }
+
+  return cleanupOrganizationName(answer);
+}
+
+function cleanupOrganizationName(value) {
+  return String(value)
+    .trim()
+    .replace(/^[—–-]\s*/u, '')
+    .replace(/[.。]+$/u, '')
+    .trim();
+}
+
+function hasOrganizationName(state) {
+  return isFilledTemplateValue(state.data.Название_организации);
 }
 
 function normalizeAnswer(value) {

@@ -318,7 +318,6 @@ test('code112 applies saved organization data from memory', async () => {
 
   const project = await completeAgentPath(['waste', 'development', 'inventoryAct']);
   const updated = await selectAgentOption(project.id, 'Название организации: ООО Авто Память');
-  assert.ok(updated.history.some((message) => /Данные сохранены для акта инвентаризации/.test(message.text)));
   assert.ok(updated.history.some((message) => /Найдены сохранённые данные для организации «ООО Авто Память»\. Использовать\?/.test(message.text)));
 
   const confirmed = await selectAgentOption(project.id, 'Да');
@@ -381,12 +380,22 @@ test('код 112 starts the inventory act generator and creates five DOCX files'
 
   assert.equal(code112.status, 'package_selected');
   assert.equal(code112.packageCode, '112');
-  assert.equal(code112.question, 'К чему теперь приступить?');
+  assert.equal(code112.question, 'Укажите название организации, для которой разрабатывается документация.');
+  assert.deepEqual(code112.availableOptions, []);
+  assert.match(code112.history.at(-1).text, /Укажите название организации/);
+
+  const prematureTitle = await selectAgentOption(started.id, 'Титул акта');
+  assert.equal(prematureTitle.extractedData.code112.awaitingOrganizationName, true);
+  assert.match(prematureTitle.history.at(-2).text, /Сначала нужно указать название организации/);
+
+  const withOrganization = await selectAgentOption(started.id, 'ООО Фермент');
+  assert.equal(withOrganization.question, 'К чему теперь приступить?');
   assert.deepEqual(
-    code112.availableOptions.map((option) => option.key),
+    withOrganization.availableOptions.map((option) => option.key),
     ['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures', 'generateAll', 'pause']
   );
-  assert.match(code112.history.at(-1).text, /С чего хотите начать/);
+  assert.equal(withOrganization.extractedData.code112.data.Название_организации, 'ООО Фермент');
+  assert.match(withOrganization.history.at(-1).text, /С чего хотите начать/);
 
   const generated = await selectAgentOption(started.id, 'generateAll');
   const files = generated.extractedData.code112.files;
