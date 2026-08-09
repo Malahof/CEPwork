@@ -7,6 +7,7 @@ import { Download, FileSpreadsheet, FileText } from 'lucide-react';
 import { exportToHtml } from '../utils/exportUtils';
 import { exportToDocx } from '../utils/docxExport';
 import { exportDocumentRegistry, exportToXlsx } from '../utils/xlsxExport';
+import { renderTemplatePreview } from '../utils/templatePreview';
 import type { DocFolder, DocPage } from '../types';
 
 interface MarkdownPreviewProps {
@@ -14,12 +15,14 @@ interface MarkdownPreviewProps {
   title: string;
   pages: DocPage[];
   folders: DocFolder[];
+  templateValues?: Record<string, string>;
   headerStart?: ReactNode;
 }
 
-export function MarkdownPreview({ content, title, pages, folders, headerStart }: MarkdownPreviewProps) {
+export function MarkdownPreview({ content, title, pages, folders, templateValues, headerStart }: MarkdownPreviewProps) {
   const previewRef = useRef<HTMLDivElement>(null);
   const [docxLoading, setDocxLoading] = useState(false);
+  const renderedContent = renderTemplatePreview(content, templateValues);
 
   function handleExportHtml() {
     if (!previewRef.current) return;
@@ -29,14 +32,14 @@ export function MarkdownPreview({ content, title, pages, folders, headerStart }:
   async function handleExportDocx() {
     setDocxLoading(true);
     try {
-      await exportToDocx(title, content);
+      await exportToDocx(title, renderedContent);
     } finally {
       setDocxLoading(false);
     }
   }
 
   function handleExportXlsx() {
-    exportToXlsx(title, content);
+    exportToXlsx(title, renderedContent);
   }
 
   function handleExportRegistry() {
@@ -73,7 +76,7 @@ export function MarkdownPreview({ content, title, pages, folders, headerStart }:
       </div>
       <div className="preview-content" ref={previewRef}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]}>
-          {content}
+          {renderedContent}
         </ReactMarkdown>
       </div>
     </div>

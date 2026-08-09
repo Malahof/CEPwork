@@ -34,6 +34,21 @@ test('code112 parses manual fields and waste rows', () => {
   assert.equal(parsed.wastes[0].handling, 'обезвреживание');
 });
 
+test('code112 ignores project page helper lines while syncing manual fields', () => {
+  const parsed = parseManualInput([
+    'Файл DOCX: `templates/docx/inventory_act/appendix_template.docx`',
+    'Название организации: ООО Ромашка manual',
+    'Дата акта: [дата_акта]',
+    '`Отход: код;наименование;класс;количество;единица;способ обращения;источник;физическое состояние`',
+    'Итоги: [сумма_кол4], [сумма_кол5], [сумма_кол6]',
+  ].join('\n'), { ignoreTemplateInstructions: true });
+
+  assert.deepEqual(parsed.fields, {
+    Название_организации: 'ООО Ромашка manual',
+  });
+  assert.deepEqual(parsed.wastes, []);
+});
+
 test('code112 parses manual commission roles and names', () => {
   const members = parseCommission('председатель Сидоров С.С.; инженер Иванов И.И.; эколог Петров П.П.');
 
@@ -102,8 +117,14 @@ test('code112 accepts manual source fields from the menu', async () => {
 
   await generate(project, { now: 1, outputDir: tempDir, docsPath: path.join(tempDir, 'menu-source-docs.json') });
   await generate(project, {
-    answer: 'Комиссия: председатель Сидоров С.С.; инженер Иванов И.И.; эколог Петров П.П.',
+    answer: 'ООО Меню',
     now: 2,
+    outputDir: tempDir,
+    docsPath: path.join(tempDir, 'menu-source-docs.json'),
+  });
+  await generate(project, {
+    answer: 'Комиссия: председатель Сидоров С.С.; инженер Иванов И.И.; эколог Петров П.П.',
+    now: 3,
     outputDir: tempDir,
     docsPath: path.join(tempDir, 'menu-source-docs.json'),
   });
@@ -114,6 +135,117 @@ test('code112 accepts manual source fields from the menu', async () => {
   );
   assert.match(project.history.at(-2).text, /Данные сохранены для акта инвентаризации/);
   assert.doesNotMatch(project.history.at(-2).text, /не нашёл такой пункт/);
+});
+
+test('code112 asks for organization before creating editable pages', async () => {
+  const project = {
+    id: 'code112-organization-first',
+    extractedData: {},
+    history: [],
+  };
+  const docsPath = path.join(tempDir, 'organization-first-docs.json');
+
+  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, true);
+  assert.match(project.history.at(-1).text, /Укажите название организации/);
+  assert.deepEqual(getCode112Options(project), []);
+  await assert.rejects(readFile(docsPath, 'utf8'), /ENOENT/);
+
+  await generate(project, {
+    answer: 'Титул акта',
+    now: 2,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, true);
+  assert.match(project.history.at(-2).text, /Сначала нужно указать название организации/);
+
+  await generate(project, {
+    answer: 'ООО Фермент',
+    now: 3,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, false);
+  assert.equal(project.extractedData.code112.data.Название_организации, 'ООО Фермент');
+  assert.match(project.history.at(-1).text, /С чего хотите начать/);
+  assert.deepEqual(
+    getCode112Options(project).map((option) => option.key),
+    ['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures', 'generateAll', 'pause'],
+  );
+
+  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  const projectFolder = snapshot.folders.find((item) => item.id === 'agent-code112-organization-first');
+  assert.equal(projectFolder.title, 'ООО Фермент');
+  const workFolder = snapshot.folders.find((item) => item.id === 'agent-code112-organization-first-code112');
+  assert.equal(workFolder.parentId, projectFolder.id);
+  assert.equal(snapshot.pages.filter((item) => item.parentId === workFolder.id).length, 5);
+});
+
+test('code112 extracts organization from inventory act phrase', async () => {
+  const project = {
+    id: 'code112-organization-phrase',
+    extractedData: {},
+    history: [],
+  };
+  const docsPath = path.join(tempDir, 'organization-phrase-docs.json');
+
+  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+  await generate(project, {
+    answer: 'Давай создадим акт инвентаризации для ООО "Фермент"',
+    now: 2,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, false);
+  assert.equal(project.extractedData.code112.data.Название_организации, 'ООО "Фермент"');
+  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  assert.equal(
+    snapshot.folders.find((item) => item.id === 'agent-code112-organization-phrase').title,
+    'ООО "Фермент"',
+  );
+});
+
+test('code112 resumes legacy projects without organization at the organization prompt', async () => {
+  const project = {
+    id: 'code112-legacy-resume',
+    packageTitle: 'Акт инвентаризации',
+    extractedData: {
+      code112: {
+        status: 'in_progress',
+        startedAt: 1,
+        updatedAt: 1,
+        activeDocument: null,
+        data: {},
+        wastes: [],
+        memory: {
+          dateFormat: 'DD.MM.YYYY',
+          pendingOrganization: null,
+          appliedOrganizations: [],
+          skippedOrganizations: [],
+          defaultMembersApplied: false,
+          savedInstructions: [],
+          geminiSystemPrompt: '',
+        },
+        files: {},
+      },
+    },
+    history: [],
+  };
+  const docsPath = path.join(tempDir, 'legacy-resume-docs.json');
+
+  await generate(project, { answer: '', now: 2, outputDir: tempDir, docsPath, memory: null });
+
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, true);
+  assert.match(project.history.at(-1).text, /Укажите название организации/);
+  await assert.rejects(readFile(docsPath, 'utf8'), /ENOENT/);
 });
 
 test('code112 confirms and applies saved organization data from memory', async () => {
@@ -221,6 +353,8 @@ test('code112 adds generated documents to docs tree and activates the title page
   const docsPath = path.join(tempDir, 'docs-tree.json');
 
   await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+  assert.equal(project.extractedData.code112.awaitingOrganizationName, true);
+
   await generate(project, {
     answer: [
       'Название организации: ООО ДокДерево',
@@ -244,13 +378,19 @@ test('code112 adds generated documents to docs tree and activates the title page
   const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
   const inProgressFolder = snapshot.folders.find((item) => item.id === 'in-progress');
   assert.equal(inProgressFolder.title, 'В разработке');
+  const projectFolder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree');
+  assert.equal(projectFolder.title, 'ООО ДокДерево');
+  assert.equal(projectFolder.parentId, 'in-progress');
   const folder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
-  assert.equal(folder.title, 'Акт инвентаризации — ООО ДокДерево');
-  assert.equal(folder.parentId, 'in-progress');
+  assert.equal(folder.title, 'Акт инвентаризации');
+  assert.equal(folder.parentId, projectFolder.id);
   const pages = snapshot.pages.filter((item) => item.parentId === folder.id);
   assert.equal(pages.length, 5);
   assert.equal(snapshot.activePageId, 'agent-code112-docs-tree-code112-titleAct');
-  assert.match(pages.find((item) => item.id === snapshot.activePageId).content, /ООО ДокДерево/);
+  const activePage = pages.find((item) => item.id === snapshot.activePageId);
+  assert.match(activePage.content, /\[название_организации\]/);
+  assert.equal(activePage.templateValues.название_организации, 'ООО ДокДерево');
+  assert.equal(pages.some((page) => page.isTemplate), false);
 });
 
 test('code112 renders exactly the entered commission member count', async () => {
