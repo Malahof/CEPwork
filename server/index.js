@@ -23,6 +23,7 @@ import {
   saveOrganization,
   saveUserPreferences,
 } from './agent/memory.js';
+import { registerCode112Upload } from './agent/generators/code112.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
@@ -325,11 +326,22 @@ function findEndOfCentralDirectory(buffer) {
 }
 
 function extractOfficeXmlText(xml) {
+  const tableRows = [...xml.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)]
+    .map((rowMatch) => [...rowMatch[0].matchAll(/<w:tc\b[\s\S]*?<\/w:tc>/g)]
+      .map((cellMatch) => extractOfficeRuns(cellMatch[0]).join(' ').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join(';'))
+    .filter(Boolean);
+  const xmlWithoutTables = xml.replace(/<w:tbl\b[\s\S]*?<\/w:tbl>/g, '\n');
+  const paragraphs = [...xmlWithoutTables.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)]
+    .map((match) => extractOfficeRuns(match[0]).join(' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return [...tableRows, ...paragraphs].join('\n').trim();
+}
+
+function extractOfficeRuns(xml) {
   return [...xml.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/g)]
-    .map((match) => decodeXmlEntities(match[1]))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .map((match) => decodeXmlEntities(match[1]));
 }
 
 function decodeXmlEntities(value) {
@@ -562,7 +574,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
     const text = extractUploadedText(file);
     const charCount = [...text].length;
     const now = Date.now();
-    const project = await updateAgentProjects(agentProjectsPath, (projects) => {
+    const project = await updateAgentProjects(agentProjectsPath, async (projects) => {
       const found = projects.find((item) => item.id === projectId);
       if (!found) {
         const error = new Error('Проект Цэпика не найден');
@@ -571,15 +583,16 @@ app.post('/api/agent/upload', async (req, res, next) => {
       }
 
       const uploads = Array.isArray(found.extractedData.uploads) ? found.extractedData.uploads : [];
+      const uploadRecord = {
+        fileName: file.filename,
+        mimeType: file.mimeType,
+        charCount,
+        text,
+        uploadedAt: now,
+      };
       found.extractedData.uploads = [
         ...uploads,
-        {
-          fileName: file.filename,
-          mimeType: file.mimeType,
-          charCount,
-          text,
-          uploadedAt: now,
-        },
+        uploadRecord,
       ];
       found.history.push({
         id: `agent-${found.history.length + 1}`,
@@ -587,6 +600,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
         text: `Файл «${file.filename}» загружен, извлечено ${charCount} символов.`,
         createdAt: now,
       });
+      await registerCode112Upload(found, uploadRecord, { now });
       found.updatedAt = now;
       return found;
     });
