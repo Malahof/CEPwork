@@ -7,11 +7,15 @@ import JSZip from 'jszip';
 import {
   buildAppendixRows,
   createDocxFromTemplate,
+  enrichWasteListWithHazardClasses,
+  extractWasteListFromText,
   generate,
   getCode112Options,
   parseCommission,
   parseManualInput,
   parseWasteRows,
+  registerCode112Upload,
+  groupWastesByClass,
   sumHazardTotals,
 } from './agent/generators/code112.js';
 
@@ -72,6 +76,25 @@ test('code112 builds appendix totals for tonnes and pieces', () => {
   const rows = buildAppendixRows(wastes);
   assert.ok(rows.some((row) => row.type === 'total' && row.cells.some((cell) => String(cell).includes('12 шт.'))));
   assert.ok(rows.some((row) => row.cells.includes('0,054 т / на 1 сотрудника в год')));
+});
+
+test('code112 extracts uploaded waste rows and groups them by classifier hazard class', async () => {
+  const extracted = extractWasteListFromText([
+    'Код;Наименование',
+    '9120400;Отходы производства, подобные отходам жизнедеятельности населения',
+    '1140202;Жилки табачного листа',
+  ].join('\n'));
+  const enriched = await enrichWasteListWithHazardClasses(extracted, {
+    classifierText: [
+      '1140202 Жилки табачного листа четвертый класс 020304',
+      '9120400 Отходы производства, подобные отходам жизнедеятельности населения неопасные 200199',
+    ].join('\n'),
+  });
+  const grouped = groupWastesByClass(enriched);
+
+  assert.equal(enriched.length, 2);
+  assert.equal(grouped[4][0].code, '1140202');
+  assert.equal(grouped['non-hazardous'][0].code, '9120400');
 });
 
 test('code112 creates a DOCX file from the prepared inventory act template', async () => {
@@ -211,6 +234,71 @@ test('code112 extracts organization from inventory act phrase', async () => {
     snapshot.folders.find((item) => item.id === 'agent-code112-organization-phrase').title,
     'ООО "Фермент"',
   );
+});
+
+test('code112 fills editable appendix page from uploaded waste list before DOCX generation', async () => {
+  const project = {
+    id: 'code112-uploaded-wastes',
+    packageCode: '112',
+    packageTitle: 'Акт инвентаризации',
+    extractedData: {},
+    history: [],
+  };
+  const docsPath = path.join(tempDir, 'uploaded-wastes-docs.json');
+
+  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null });
+  await generate(project, {
+    answer: 'ООО Фермент',
+    now: 2,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+  await registerCode112Upload(
+    project,
+    {
+      fileName: 'wastes.csv',
+      mimeType: 'text/csv',
+      charCount: 122,
+      text: [
+        'Код;Наименование',
+        '9120400;Отходы производства, подобные отходам жизнедеятельности населения',
+        '1140202;Жилки табачного листа',
+      ].join('\n'),
+      uploadedAt: 3,
+    },
+    {
+      now: 3,
+      classifierText: [
+        '1140202 Жилки табачного листа четвертый класс 020304',
+        '9120400 Отходы производства, подобные отходам жизнедеятельности населения неопасные 200199',
+      ].join('\n'),
+    }
+  );
+
+  assert.equal(project.extractedData.code112.extractedWasteList.length, 2);
+  assert.equal(project.extractedData.code112.pendingWasteImport.count, 2);
+
+  await generate(project, {
+    answer: 'используй загруженный файл',
+    now: 4,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  assert.equal(project.extractedData.code112.files.appendix.status, 'in_progress');
+  assert.equal(project.extractedData.code112.files.appendix.downloadUrl, null);
+  assert.equal(project.extractedData.code112.wastes.length, 2);
+  assert.match(project.history.at(-2).text, /Заполнил редактируемую страницу/);
+
+  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
+  const appendixPage = snapshot.pages.find((item) => item.id === 'agent-code112-uploaded-wastes-code112-appendix');
+  assert.match(appendixPage.content, /9120400/);
+  assert.match(appendixPage.content, /Неопасные отходы/);
+  assert.match(appendixPage.content, /1140202/);
+  assert.match(appendixPage.content, /4 класс опасности/);
+  assert.doesNotMatch(appendixPage.content, /\[код\]/);
 });
 
 test('code112 resumes legacy projects without organization at the organization prompt', async () => {
