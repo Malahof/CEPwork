@@ -151,6 +151,7 @@ export function EditorPage() {
                   title={activePage.title}
                   pages={pages}
                   folders={folders}
+                  templateValues={activePage.templateValues}
                   headerStart={
                     <button className="icon-btn" type="button" title="Свернуть предпросмотр" onClick={togglePreview}>
                       <Minus size={16} />

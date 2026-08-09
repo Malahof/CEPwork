@@ -15,6 +15,7 @@ export interface DocPage {
   updatedAt: number;
   isTemplate?: boolean;
   templateVariables?: TemplateVariable[];
+  templateValues?: Record<string, string>;
 }
 
 export interface DocFolder {

@@ -106,7 +106,17 @@ function normalizePage(value) {
     ...(value.templateVariables === undefined
       ? {}
       : { templateVariables: requireTemplateVariables(value.templateVariables) }),
+    ...(value.templateValues === undefined
+      ? {}
+      : { templateValues: requireTemplateValues(value.templateValues) }),
   };
+}
+
+function requireTemplateValues(value) {
+  if (!isRecord(value)) throw new Error('Invalid page.templateValues');
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, item === null || item === undefined ? '' : String(item)])
+  );
 }
 
 function requireTemplateVariables(value) {
