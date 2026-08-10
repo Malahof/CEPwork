@@ -276,12 +276,47 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
     }
   );
 
+  assert.equal(project.extractedData.code112.pendingWasteExtraction.fileName, 'wastes.csv');
+
+  await generate(project, {
+    answer: 'Только коды и наименования',
+    now: 4,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+    classifierText: [
+      '1140202 Жилки табачного листа четвертый класс 020304',
+      '9120400 Отходы производства, подобные отходам жизнедеятельности населения неопасные 200199',
+    ].join('\n'),
+    referenceTexts: {
+      zagotovka: '',
+      utilizationPart1: '',
+      utilizationPart2: '',
+      neutralization: '',
+    },
+  });
+
   assert.equal(project.extractedData.code112.extractedWasteList.length, 2);
   assert.equal(project.extractedData.code112.pendingWasteImport.count, 2);
 
   await generate(project, {
     answer: 'используй загруженный файл',
-    now: 4,
+    now: 5,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  await generate(project, {
+    answer: 'захоронение',
+    now: 6,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+  await generate(project, {
+    answer: 'захоронение',
+    now: 7,
     outputDir: tempDir,
     docsPath,
     memory: null,
@@ -290,7 +325,7 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
   assert.equal(project.extractedData.code112.files.appendix.status, 'in_progress');
   assert.equal(project.extractedData.code112.files.appendix.downloadUrl, null);
   assert.equal(project.extractedData.code112.wastes.length, 2);
-  assert.match(project.history.at(-2).text, /Заполнил редактируемую страницу/);
+  assert.match(project.history.at(-2).text, /Заполнил редактируемые страниц/);
 
   const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
   const appendixPage = snapshot.pages.find((item) => item.id === 'agent-code112-uploaded-wastes-code112-appendix');
@@ -299,6 +334,12 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
   assert.match(appendixPage.content, /1140202/);
   assert.match(appendixPage.content, /4 класс опасности/);
   assert.doesNotMatch(appendixPage.content, /\[код\]/);
+  const sourcesPage = snapshot.pages.find((item) => item.id === 'agent-code112-uploaded-wastes-code112-sources');
+  const wasteFormationPage = snapshot.pages.find((item) => item.id === 'agent-code112-uploaded-wastes-code112-wasteFormation');
+  assert.match(sourcesPage.content, /1140202/);
+  assert.match(sourcesPage.content, /9120400/);
+  assert.match(wasteFormationPage.content, /1140202/);
+  assert.match(wasteFormationPage.content, /9120400/);
 });
 
 test('code112 resumes legacy projects without organization at the organization prompt', async () => {
