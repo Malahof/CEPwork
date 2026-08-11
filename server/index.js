@@ -1,8 +1,6 @@
 import express from 'express';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { inflateRawSync } from 'node:zlib';
-import * as XLSX from 'xlsx';
 import { fileURLToPath } from 'node:url';
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from './defaultDocs.js';
 import {
@@ -24,6 +22,7 @@ import {
   saveUserPreferences,
 } from './agent/memory.js';
 import { registerCode112Upload } from './agent/generators/code112.js';
+import { extractTextFromUploadedFile } from './agent/wasteDataExtractor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsPath = process.env.DOCS_DATA_PATH
@@ -255,112 +254,6 @@ function parseContentDisposition(value) {
   return result;
 }
 
-function extractUploadedText(file) {
-  const extension = path.extname(file.filename).toLowerCase();
-  if (extension === '.xlsx' || extension === '.xls') return extractSpreadsheetText(file.buffer);
-  if (extension === '.docx') return extractDocxText(file.buffer);
-  if (extension === '.pdf') return extractPdfText(file.buffer);
-  if (['.txt', '.csv', '.md', '.json'].includes(extension) || file.mimeType.startsWith('text/')) {
-    return file.buffer.toString('utf8').trim();
-  }
-  return '';
-}
-
-function extractSpreadsheetText(buffer) {
-  const workbook = XLSX.read(buffer, { type: 'buffer' });
-  return workbook.SheetNames.map((sheetName) => XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]))
-    .join('\n')
-    .trim();
-}
-
-function extractDocxText(buffer) {
-  const entries = readZipEntries(buffer);
-  const names = [...entries.keys()].filter((name) => /^word\/(document|header|footer|footnotes|endnotes).*\.xml$/.test(name));
-  return names
-    .map((name) => extractOfficeXmlText(entries.get(name).toString('utf8')))
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
-function readZipEntries(buffer) {
-  const entries = new Map();
-  const eocdOffset = findEndOfCentralDirectory(buffer);
-  if (eocdOffset === -1) return entries;
-
-  const totalEntries = buffer.readUInt16LE(eocdOffset + 10);
-  let centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
-
-  for (let index = 0; index < totalEntries; index += 1) {
-    if (buffer.readUInt32LE(centralDirectoryOffset) !== 0x02014b50) break;
-
-    const compressionMethod = buffer.readUInt16LE(centralDirectoryOffset + 10);
-    const compressedSize = buffer.readUInt32LE(centralDirectoryOffset + 20);
-    const fileNameLength = buffer.readUInt16LE(centralDirectoryOffset + 28);
-    const extraLength = buffer.readUInt16LE(centralDirectoryOffset + 30);
-    const commentLength = buffer.readUInt16LE(centralDirectoryOffset + 32);
-    const localHeaderOffset = buffer.readUInt32LE(centralDirectoryOffset + 42);
-    const fileNameStart = centralDirectoryOffset + 46;
-    const fileName = buffer.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
-
-    const localFileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
-    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
-    const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
-    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
-
-    if (compressionMethod === 0) entries.set(fileName, compressed);
-    if (compressionMethod === 8) entries.set(fileName, inflateRawSync(compressed));
-
-    centralDirectoryOffset += 46 + fileNameLength + extraLength + commentLength;
-  }
-
-  return entries;
-}
-
-function findEndOfCentralDirectory(buffer) {
-  const minOffset = Math.max(0, buffer.length - 66000);
-  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
-    if (buffer.readUInt32LE(offset) === 0x06054b50) return offset;
-  }
-  return -1;
-}
-
-function extractOfficeXmlText(xml) {
-  const tableRows = [...xml.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)]
-    .map((rowMatch) => [...rowMatch[0].matchAll(/<w:tc\b[\s\S]*?<\/w:tc>/g)]
-      .map((cellMatch) => extractOfficeRuns(cellMatch[0]).join(' ').replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .join(';'))
-    .filter(Boolean);
-  const xmlWithoutTables = xml.replace(/<w:tbl\b[\s\S]*?<\/w:tbl>/g, '\n');
-  const paragraphs = [...xmlWithoutTables.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)]
-    .map((match) => extractOfficeRuns(match[0]).join(' ').replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
-  return [...tableRows, ...paragraphs].join('\n').trim();
-}
-
-function extractOfficeRuns(xml) {
-  return [...xml.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/g)]
-    .map((match) => decodeXmlEntities(match[1]));
-}
-
-function decodeXmlEntities(value) {
-  return value
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
-}
-
-function extractPdfText(buffer) {
-  return [...buffer.toString('latin1').matchAll(/\(([^()]*)\)\s*Tj/g)]
-    .map((match) => match[1].replace(/\\([nrtbf()\\])/g, '$1'))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 async function generateEcoDocumentWithOpenAi(payload) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -571,7 +464,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
     const file = files.file;
     if (!file) throw new Error('Необходимо выбрать файл для загрузки');
 
-    const text = extractUploadedText(file);
+    const text = await extractTextFromUploadedFile(file);
     const charCount = [...text].length;
     const now = Date.now();
     const project = await updateAgentProjects(agentProjectsPath, async (projects) => {
