@@ -221,10 +221,67 @@ export function createAgentProject(now = Date.now(), memory = null) {
   return project;
 }
 
+function handleQuickLaunch(project, answer, now) {
+  // Direct code "112" - create project and ask for organization name
+  if (answer === '112') {
+    const packageDefinition = packageDefinitions.inventoryAct;
+    project.status = 'package_selected';
+    project.currentNode = null;
+    project.packageCode = packageDefinition.code;
+    project.packageTitle = packageDefinition.title;
+    project.documents = packageDefinition.documents;
+    addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+    return project;
+  }
+
+  // Text request with organization name: "акт инвентаризации для ООО 'Фермент'"
+  const inventoryActMatch = answer.match(/акт\s+инвентаризации\s+для\s+(.+)$/iu);
+  if (inventoryActMatch) {
+    const organizationName = extractOrganizationNameFromText(inventoryActMatch[1]);
+    if (organizationName) {
+      const packageDefinition = packageDefinitions.inventoryAct;
+      project.status = 'package_selected';
+      project.currentNode = null;
+      project.packageCode = packageDefinition.code;
+      project.packageTitle = packageDefinition.title;
+      project.documents = packageDefinition.documents;
+      project.extractedData = project.extractedData || {};
+      project.extractedData.code112 = project.extractedData.code112 || {};
+      project.extractedData.code112.data = project.extractedData.code112.data || {};
+      project.extractedData.code112.data.Название_организации = organizationName;
+      addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+      addAgentMessage(project, `Организация: ${organizationName}`, now);
+      return project;
+    }
+  }
+
+  return null;
+}
+
+function extractOrganizationNameFromText(text) {
+  // Try to extract from quotes first
+  const quotedMatch = text.match(/[«"„]([^»"“]+)[»"”]/u);
+  if (quotedMatch) return quotedMatch[1].trim();
+
+  // Check if it starts with organization type
+  if (/^(?:ооо|зао|оао|ао|ип|общество|компания)/iu.test(text.trim())) {
+    return text.trim();
+  }
+
+  // Otherwise return the whole text as organization name
+  return text.trim();
+}
+
 export async function selectAgentAnswer(project, answer, now = Date.now(), context = {}) {
   const normalizedAnswer = answer.trim();
   const memoryCommandResult = await handleMemoryCommand(project, normalizedAnswer, now, context.memoryPath);
   if (memoryCommandResult) return memoryCommandResult;
+
+  // Quick launch for code112
+  if (project.status === 'selecting' && project.currentNode === 'sphere') {
+    const quickLaunchResult = handleQuickLaunch(project, normalizedAnswer, now);
+    if (quickLaunchResult) return quickLaunchResult;
+  }
 
   if (project.status !== 'selecting' || !project.currentNode) {
     if (!normalizedAnswer) {

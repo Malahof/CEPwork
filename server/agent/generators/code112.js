@@ -414,6 +414,15 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
   };
   state.updatedAt = now;
   project.updatedAt = now;
+
+  // Immediately update docs.json pages after extraction
+  const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    refreshAppendixContent: true,
+    refreshSourcesContent: true,
+    refreshWasteFormationContent: true,
+  });
+
   askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
   return project;
 }
@@ -1068,20 +1077,10 @@ function buildWasteImportQuestion(state) {
 }
 
 function buildWasteReviewQuestion(state) {
-  const rows = state.extractedWasteList.slice(0, 8).map((waste) => {
-    const details = [
-      waste.hazardClass && waste.hazardClass !== 'не указан' ? `класс ${waste.hazardClass}` : '',
-      waste.normative ? `норматив ${waste.normative}` : '',
-      waste.amount ? `кол-во ${formatAmount(waste)}` : '',
-      waste.suggestedHandling ? `способ ${waste.suggestedHandling}` : '',
-    ].filter(Boolean).join('; ');
-    return `• ${waste.code} — ${waste.name}${details ? ` (${details})` : ''}`;
-  });
-  const hidden = state.extractedWasteList.length > rows.length ? `\n…и ещё ${state.extractedWasteList.length - rows.length}.` : '';
   return [
-    `Из файла извлечено отходов: ${state.extractedWasteList.length}.`,
-    ...rows,
-    `${hidden}\nВсё верно? Да / Нет (тогда введите вручную).`,
+    `Из файла извлечено ${state.extractedWasteList.length} отходов. Страницы (Приложение, Источники, Образование) обновлены.`,
+    'Проверьте данные в предпросмотре.',
+    'Всё верно? Да / Нет (тогда введите вручную).',
   ].join('\n');
 }
 
