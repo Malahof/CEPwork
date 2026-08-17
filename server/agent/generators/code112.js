@@ -93,16 +93,20 @@ export async function generate(projectData, userSources = {}) {
 
   if (!state.startedAt) {
     state.startedAt = now;
+    console.log('[code112] Starting new code112 project', { projectId: projectData.id });
     addAgentMessage(projectData, buildStartMessage(state), now);
     for (const message of memoryMessages) addAgentMessage(projectData, message, now);
     if (!hasOrganizationName(state)) {
       state.awaitingOrganizationName = true;
+      console.log('[code112] Awaiting organization name');
       askUser(projectData, organizationNameQuestion(), [], now);
       projectData.updatedAt = now;
       return projectData;
     }
     state.awaitingOrganizationName = false;
+    console.log('[code112] Organization name provided, creating project pages');
     await syncCode112ProjectPages(projectData, state, docsPath, now, { activateDocumentKey: 'appendix' });
+    console.log('[code112] Project pages created successfully');
     askUser(projectData, 'С чего хотите начать?', menuOptions(), now);
     return projectData;
   }
@@ -371,9 +375,12 @@ export async function registerCode112Upload(project, upload, options = {}) {
 }
 
 async function processPendingWasteExtraction(project, state, mode, now, userSources = {}) {
+  console.log('[code112] Processing waste extraction', { mode, uploadIndex: state.pendingWasteExtraction?.uploadIndex });
+  
   const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
   const upload = uploads[state.pendingWasteExtraction.uploadIndex] ?? uploads.at(-1) ?? state.pendingWasteExtraction;
   if (!upload) {
+    console.warn('[code112] Upload not found for waste extraction');
     state.pendingWasteExtraction = null;
     askUser(project, 'Загруженный файл не найден. Загрузите файл ещё раз или введите отходы вручную.', menuOptions(), now);
     project.updatedAt = now;
@@ -388,7 +395,11 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
       amount: waste.quantity ?? '',
     }))
     .filter((waste) => waste.code);
+  
+  console.log('[code112] Extracted wastes from file:', { fileName: upload.fileName, count: extracted.length, mode });
+  
   if (!extracted.length) {
+    console.warn('[code112] No waste codes found in uploaded file');
     state.pendingWasteExtraction = null;
     askUser(project, `В файле «${upload.fileName}» не нашёл 7-значные коды отходов. Введите строки вручную или загрузите другой файл.`, menuOptions(), now);
     project.updatedAt = now;
@@ -397,13 +408,18 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
 
   let enriched = extracted;
   try {
+    console.log('[code112] Enriching wastes with hazard classes');
     enriched = await enrichWasteListWithHazardClasses(extracted, userSources);
   } catch (error) {
     console.warn('[code112] Не удалось определить классы опасности по классификатору 3Т', error);
   }
+  
+  console.log('[code112] Resolving disposal methods for wastes');
   enriched = await resolveWasteDisposalMethods(enriched, userSources);
 
   state.extractedWasteList = mergeWastes(state.extractedWasteList, enriched).sort(compareWasteCodes);
+  console.log('[code112] Total extracted wastes after merge:', state.extractedWasteList.length);
+  
   state.pendingWasteExtraction = null;
   state.pendingWasteImport = {
     stage: 'review',
@@ -417,25 +433,30 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
 
   // Immediately update docs.json pages after extraction
   const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
+  console.log('[code112] Updating project pages after extraction');
   await syncCode112ProjectPages(project, state, docsPath, now, {
     refreshAppendixContent: true,
     refreshSourcesContent: true,
     refreshWasteFormationContent: true,
   });
+  console.log('[code112] Project pages updated after extraction');
 
   askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
   return project;
 }
 
 async function resolveWasteDisposalMethods(wastes, options = {}) {
+  console.log('[code112] Resolving disposal methods for', wastes.length, 'wastes');
   const resolved = [];
   for (const waste of wastes) {
     if (waste.handling || waste.suggestedHandling) {
+      console.log('[code112] Waste', waste.code, 'already has handling:', waste.handling || waste.suggestedHandling);
       resolved.push(waste);
       continue;
     }
     try {
       const result = await resolveDisposalMethod(waste.code, options);
+      console.log('[code112] Resolved disposal for', waste.code, 'method:', result.method, 'source:', result.source);
       resolved.push({
         ...waste,
         suggestedHandling: result.method ?? '',
@@ -450,6 +471,7 @@ async function resolveWasteDisposalMethods(wastes, options = {}) {
       });
     }
   }
+  console.log('[code112] Disposal resolution completed, resolved:', resolved.length, 'wastes');
   return resolved;
 }
 
@@ -1033,7 +1055,14 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
 }
 
 async function fillAppendixFromExtractedWastes(project, state, docsPath, now, options = {}) {
+  console.log('[code112] Filling appendix from extracted wastes', { 
+    extractedCount: state.extractedWasteList.length,
+    explicit: options.explicit,
+    refreshAllPages: options.refreshAllPages
+  });
+  
   if (!state.extractedWasteList.length) {
+    console.warn('[code112] No extracted wastes to fill appendix');
     state.pendingWasteImport = null;
     askUser(project, 'В загруженных файлах пока не найден список отходов. Загрузите DOCX, XLSX, CSV, TXT или PDF с колонками кода и наименования.', documentWorkOptions(), now);
     project.updatedAt = now;
@@ -1041,10 +1070,14 @@ async function fillAppendixFromExtractedWastes(project, state, docsPath, now, op
   }
 
   state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+  console.log('[code112] Merged wastes count:', state.wastes.length);
+  
   state.pendingWasteImport = null;
   state.activeDocument = 'appendix';
   state.files.appendix.status = 'in_progress';
   state.awaitingWasteDetails = nextMissingWasteDetails(state.wastes);
+  
+  console.log('[code112] Syncing project pages with extracted wastes');
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'appendix',
     refreshAppendixContent: true,
@@ -1053,13 +1086,16 @@ async function fillAppendixFromExtractedWastes(project, state, docsPath, now, op
   });
 
   const nextQuestion = buildNextWasteDetailsQuestion(state);
-  addAgentMessage(
-    project,
-    options.refreshAllPages
+  const message = options.refreshAllPages
       ? `Заполнил редактируемые страницы «Приложение к акту», «Источники образования» и «Образование отходов» данными из загруженного файла: ${state.extractedWasteList.length} отходов.`
-      : `Заполнил редактируемую страницу «Приложение к акту» данными из загруженного файла: ${state.extractedWasteList.length} отходов, колонки 2–3 и группировка по классам опасности.`,
-    now
-  );
+      : `Заполнил редактируемую страницу «Приложение к акту» данными из загруженного файла: ${state.extractedWasteList.length} отходов, колонки 2–3 и группировка по классам опасности.`;
+  
+  console.log('[code112] Appendix filled successfully', { 
+    wastesCount: state.extractedWasteList.length,
+    hasNextQuestion: !!nextQuestion
+  });
+  
+  addAgentMessage(project, message, now);
   askUser(
     project,
     nextQuestion || 'Колонки 2–3 заполнены. Добавьте нормативы, количества и способы обращения или отправьте «Сгенерировать все».',
@@ -1215,6 +1251,19 @@ async function syncCode112ProjectPages(project, state, docsPath, now, options = 
 
   const snapshot = await readDocsSnapshot(docsPath);
   const data = buildTemplateData(project, state);
+  
+  // Ensure snapshot.pages is an array
+  if (!Array.isArray(snapshot.pages)) {
+    console.warn('[code112] snapshot.pages is not an array, initializing as empty array');
+    snapshot.pages = [];
+  }
+  
+  // Ensure snapshot.folders is an array
+  if (!Array.isArray(snapshot.folders)) {
+    console.warn('[code112] snapshot.folders is not an array, initializing as empty array');
+    snapshot.folders = [];
+  }
+  
   ensureFolder(snapshot, {
     id: 'in-progress',
     title: 'В разработке',
@@ -1273,9 +1322,16 @@ async function syncCode112ProjectPages(project, state, docsPath, now, options = 
 
   if (options.activateDocumentKey) {
     snapshot.activePageId = code112PageId(project.id, options.activateDocumentKey);
+    console.log('[code112] Activating document:', options.activateDocumentKey);
   }
   await writeDocsSnapshot(docsPath, snapshot);
-  console.log('[code112] docs.json синхронизирован', { activePageId: snapshot.activePageId, pages: code112Documents.length });
+  console.log('[code112] docs.json синхронизирован', { 
+    activePageId: snapshot.activePageId, 
+    pages: code112Documents.length,
+    refreshedAppendix: options.refreshAppendixContent,
+    refreshedSources: options.refreshSourcesContent,
+    refreshedWasteFormation: options.refreshWasteFormationContent
+  });
 }
 
 function refreshedProjectPageContent(document, data, options) {
@@ -2163,9 +2219,21 @@ function escapeRegExp(value) {
 
 function mergeWastes(existing, incoming) {
   const byCodeName = new Map();
-  for (const waste of [...existing, ...incoming]) {
+  const existingArray = Array.isArray(existing) ? existing : [];
+  const incomingArray = Array.isArray(incoming) ? incoming : [];
+  console.log('[code112] mergeWastes: existing wastes:', existingArray.length, 'incoming wastes:', incomingArray.length);
+  
+  if (!Array.isArray(existing)) {
+    console.warn('[code112] existing is not an array in mergeWastes, treating as empty array');
+  }
+  if (!Array.isArray(incoming)) {
+    console.warn('[code112] incoming is not an array in mergeWastes, treating as empty array');
+  }
+  
+  for (const waste of [...existingArray, ...incomingArray]) {
     byCodeName.set(`${waste.code}:${normalizeAnswer(waste.name)}`, waste);
   }
+  console.log('[code112] mergeWastes: merged wastes count:', byCodeName.size);
   return [...byCodeName.values()];
 }
 

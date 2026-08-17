@@ -36,38 +36,57 @@ const REFERENCES = {
 
 export async function resolveDisposalMethod(code, options = {}) {
   const normalizedCode = String(code).trim();
+  console.log('[disposalResolver] Resolving disposal method for code:', normalizedCode);
+  
   if (normalizedCode === '9120400') {
+    console.log('[disposalResolver] Code 9120400 requires manual handling');
     return { method: null, source: 'manual: 9120400' };
   }
 
   const referenceTexts = options.referenceTexts ?? {};
-  const zagotovkaText = referenceTexts.zagotovka ?? await safeReadReferenceText(REFERENCES.zagotovka, options);
-  if (containsWasteCode(zagotovkaText, normalizedCode)) {
-    return { method: 'заготовка', source: 'minpriroda:zagotovka' };
+  
+  try {
+    const zagotovkaText = referenceTexts.zagotovka ?? await safeReadReferenceText(REFERENCES.zagotovka, options);
+    if (containsWasteCode(zagotovkaText, normalizedCode)) {
+      console.log('[disposalResolver] Код', normalizedCode, 'найден в реестре заготовки, способ: заготовка');
+      return { method: 'заготовка', source: 'minpriroda:zagotovka' };
+    }
+  } catch (error) {
+    console.warn('[disposalResolver] Failed to read zagotovka reference:', error);
   }
 
-  const utilizationTexts = [
-    referenceTexts.utilizationPart1 ?? await safeReadReferenceText(REFERENCES.utilizationPart1, options),
-    referenceTexts.utilizationPart2 ?? await safeReadReferenceText(REFERENCES.utilizationPart2, options),
-  ];
-  for (const [index, text] of utilizationTexts.entries()) {
-    const entries = findCodeEntries(text, normalizedCode);
-    // Check if waste is in utilization registry and either doesn't have "own waste" restriction OR has "accepts from others"
-    for (const entry of entries) {
-      const hasOwnWasteOnly = OWN_WASTE_RE.test(entry);
-      const acceptsFromOthers = /принимает\s+от\s+других|прием\s+от\s+других/iu.test(entry);
-      if (!hasOwnWasteOnly || acceptsFromOthers) {
-        console.log('[disposalResolver] Код', normalizedCode, 'найден в реестре использования часть', index + 1, 'способ: использование');
-        return { method: 'использование', source: `ecoinfo:utilization:${index + 1}` };
+  try {
+    const utilizationTexts = [
+      referenceTexts.utilizationPart1 ?? await safeReadReferenceText(REFERENCES.utilizationPart1, options),
+      referenceTexts.utilizationPart2 ?? await safeReadReferenceText(REFERENCES.utilizationPart2, options),
+    ];
+    for (const [index, text] of utilizationTexts.entries()) {
+      const entries = findCodeEntries(text, normalizedCode);
+      // Check if waste is in utilization registry and either doesn't have "own waste" restriction OR has "accepts from others"
+      for (const entry of entries) {
+        const hasOwnWasteOnly = OWN_WASTE_RE.test(entry);
+        const acceptsFromOthers = /принимает\s+от\s+других|прием\s+от\s+других/iu.test(entry);
+        if (!hasOwnWasteOnly || acceptsFromOthers) {
+          console.log('[disposalResolver] Код', normalizedCode, 'найден в реестре использования часть', index + 1, 'способ: использование');
+          return { method: 'использование', source: `ecoinfo:utilization:${index + 1}` };
+        }
       }
     }
+  } catch (error) {
+    console.warn('[disposalResolver] Failed to read utilization references:', error);
   }
 
-  const neutralizationText = referenceTexts.neutralization ?? await safeReadReferenceText(REFERENCES.neutralization, options);
-  if (containsWasteCode(neutralizationText, normalizedCode)) {
-    return { method: 'обезвреживание', source: 'ecoinfo:neutralization' };
+  try {
+    const neutralizationText = referenceTexts.neutralization ?? await safeReadReferenceText(REFERENCES.neutralization, options);
+    if (containsWasteCode(neutralizationText, normalizedCode)) {
+      console.log('[disposalResolver] Код', normalizedCode, 'найден в реестре обезвреживания, способ: обезвреживание');
+      return { method: 'обезвреживание', source: 'ecoinfo:neutralization' };
+    }
+  } catch (error) {
+    console.warn('[disposalResolver] Failed to read neutralization reference:', error);
   }
 
+  console.log('[disposalResolver] Код', normalizedCode, 'не найден в реестрах, используя способ по умолчанию: захоронение');
   return { method: 'захоронение', source: 'default' };
 }
 
@@ -192,20 +211,38 @@ async function readCachedText(reference) {
 }
 
 async function readOrDownloadPdf(reference, options = {}) {
+  console.log('[disposalResolver] readOrDownloadPdf called for', reference.cachePath, 'refresh:', options.refresh);
+  
   if (!options.refresh) {
     try {
-      return await readFile(reference.cachePath);
+      const buffer = await readFile(reference.cachePath);
+      console.log('[disposalResolver] Using cached PDF from', reference.cachePath, 'size:', buffer.length);
+      return buffer;
     } catch (error) {
-      if (!isNotFoundError(error)) throw error;
+      if (!isNotFoundError(error)) {
+        console.warn('[disposalResolver] Error reading cached PDF', reference.cachePath, error);
+        throw error;
+      }
+      console.log('[disposalResolver] Cached PDF not found, will download');
     }
   }
 
-  const response = await fetch(reference.url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${reference.url}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  await mkdir(path.dirname(reference.cachePath), { recursive: true });
-  await writeFile(reference.cachePath, buffer);
-  return buffer;
+  try {
+    console.log('[disposalResolver] Attempting to download PDF from', reference.url);
+    const response = await fetch(reference.url);
+    if (!response.ok) {
+      console.warn('[disposalResolver] Failed to download PDF', reference.url, `HTTP ${response.status}`);
+      throw new Error(`HTTP ${response.status}: ${reference.url}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await mkdir(path.dirname(reference.cachePath), { recursive: true });
+    await writeFile(reference.cachePath, buffer);
+    console.log('[disposalResolver] Successfully downloaded and cached PDF to', reference.cachePath, 'size:', buffer.length);
+    return buffer;
+  } catch (error) {
+    console.error('[disposalResolver] Failed to download PDF', reference.url, error);
+    throw error;
+  }
 }
 
 function findCodeEntries(text, code) {

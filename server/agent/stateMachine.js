@@ -221,7 +221,7 @@ export function createAgentProject(now = Date.now(), memory = null) {
   return project;
 }
 
-function handleQuickLaunch(project, answer, now) {
+async function handleQuickLaunch(project, answer, now, context = {}) {
   // Direct code "112" - create project and ask for organization name
   if (answer === '112') {
     const packageDefinition = packageDefinitions.inventoryAct;
@@ -251,7 +251,9 @@ function handleQuickLaunch(project, answer, now) {
       project.extractedData.code112.data.Название_организации = organizationName;
       addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
       addAgentMessage(project, `Организация: ${organizationName}`, now);
-      return project;
+      // Call generateCode112 to create pages after organization name is set
+      const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
+      return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
   }
 
@@ -279,7 +281,7 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
 
   // Quick launch for code112
   if (project.status === 'selecting' && project.currentNode === 'sphere') {
-    const quickLaunchResult = handleQuickLaunch(project, normalizedAnswer, now);
+    const quickLaunchResult = await handleQuickLaunch(project, normalizedAnswer, now, context);
     if (quickLaunchResult) return quickLaunchResult;
   }
 
