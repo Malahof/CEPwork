@@ -222,8 +222,11 @@ export function createAgentProject(now = Date.now(), memory = null) {
 }
 
 async function handleQuickLaunch(project, answer, now, context = {}) {
+  console.log('[stateMachine] handleQuickLaunch called with answer:', answer);
+  
   // Direct code "112" - create project and ask for organization name
   if (answer === '112') {
+    console.log('[stateMachine] Quick launch with code 112');
     const packageDefinition = packageDefinitions.inventoryAct;
     project.status = 'package_selected';
     project.currentNode = null;
@@ -238,6 +241,7 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
   const inventoryActMatch = answer.match(/акт\s+инвентаризации\s+для\s+(.+)$/iu);
   if (inventoryActMatch) {
     const organizationName = extractOrganizationNameFromText(inventoryActMatch[1]);
+    console.log('[stateMachine] Quick launch with organization name:', organizationName);
     if (organizationName) {
       const packageDefinition = packageDefinitions.inventoryAct;
       project.status = 'package_selected';
@@ -245,18 +249,26 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
       project.packageCode = packageDefinition.code;
       project.packageTitle = packageDefinition.title;
       project.documents = packageDefinition.documents;
+      
+      // Initialize code112 state structure properly
       project.extractedData = project.extractedData || {};
       project.extractedData.code112 = project.extractedData.code112 || {};
       project.extractedData.code112.data = project.extractedData.code112.data || {};
       project.extractedData.code112.data.Название_организации = organizationName;
+      
+      console.log('[stateMachine] Organization name set in code112.data:', organizationName);
+      console.log('[stateMachine] Calling generateCode112 to create pages');
+      
       addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
       addAgentMessage(project, `Организация: ${organizationName}`, now);
+      
       // Call generateCode112 to create pages after organization name is set
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
       return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
   }
 
+  console.log('[stateMachine] No quick launch pattern matched');
   return null;
 }
 

@@ -908,6 +908,7 @@ async function resolveCode112Memory(userSources) {
 function ensureGeneratorState(project, now) {
   project.extractedData = project.extractedData && typeof project.extractedData === 'object' ? project.extractedData : {};
   if (!project.extractedData.code112 || typeof project.extractedData.code112 !== 'object') {
+    console.log('[code112] Creating new code112 state');
     project.extractedData.code112 = {
       status: 'in_progress',
       startedAt: null,
@@ -944,7 +945,14 @@ function ensureGeneratorState(project, now) {
         ])
       ),
     };
+  } else {
+    console.log('[code112] Using existing code112 state');
+    // Preserve existing data if it exists
+    if (!project.extractedData.code112.data) {
+      project.extractedData.code112.data = {};
+    }
   }
+  
   project.extractedData.code112.awaitingOrganizationName = Boolean(project.extractedData.code112.awaitingOrganizationName);
   project.extractedData.code112.pendingWasteExtraction = project.extractedData.code112.pendingWasteExtraction ?? null;
   project.extractedData.code112.pendingWasteImport = project.extractedData.code112.pendingWasteImport ?? null;
@@ -953,6 +961,8 @@ function ensureGeneratorState(project, now) {
   project.extractedData.code112.extractedWasteList = Array.isArray(project.extractedData.code112.extractedWasteList)
     ? project.extractedData.code112.extractedWasteList.map(normalizeWasteRow).filter((waste) => waste.code)
     : [];
+  
+  console.log('[code112] State ensured, organization name:', project.extractedData.code112.data.Название_организации);
   return project.extractedData.code112;
 }
 

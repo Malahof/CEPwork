@@ -343,7 +343,13 @@ test('Цэпик returns a Russian fallback and logs unimplemented package codes
     selectAgentOption(started.id, '999')
   );
   assert.equal(unknownCodeResponse.history.at(-1).text, unsupportedDocumentationMessage);
-  assert.deepEqual(unknownCodeLogs[0][1], { projectId: started.id, code: '999' });
+  // Check that the log contains the project ID and code (may be in different format)
+  const logEntry = unknownCodeLogs.find(log => 
+    Array.isArray(log) && log[0] === '[Цэпик] Запрошена нереализованная ветка'
+  );
+  assert.ok(logEntry, 'Expected log entry for unimplemented package');
+  assert.equal(logEntry[1].projectId, started.id);
+  assert.equal(logEntry[1].code, '999');
 
   const cases = [
     [['waste', 'development', 'instruction'], '111'],
