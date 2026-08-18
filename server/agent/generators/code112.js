@@ -420,6 +420,10 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
   state.extractedWasteList = mergeWastes(state.extractedWasteList, enriched).sort(compareWasteCodes);
   console.log('[code112] Total extracted wastes after merge:', state.extractedWasteList.length);
   
+  // Also merge into state.wastes so pages show all wastes
+  state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+  console.log('[code112] Total state.wastes after merge:', state.wastes.length);
+  
   state.pendingWasteExtraction = null;
   state.pendingWasteImport = {
     stage: 'review',
@@ -1457,7 +1461,17 @@ function buildEditableTemplatePageContent(document) {
 }
 
 function buildAppendixProjectPageContent(data) {
+  console.log('[code112] Building appendix page content with', data.wastes.length, 'wastes');
   const groups = groupWastesByClass(data.wastes);
+  console.log('[code112] Waste groups for appendix:', {
+    class1: groups[1]?.length || 0,
+    class2: groups[2]?.length || 0,
+    class3: groups[3]?.length || 0,
+    class4: groups[4]?.length || 0,
+    nonHazardous: groups['non-hazardous']?.length || 0,
+    unknown: groups.unknown?.length || 0
+  });
+  
   const groupBlocks = [
     ['1', '1 класс опасности', groups[1]],
     ['2', '2 класс опасности', groups[2]],
@@ -1467,9 +1481,13 @@ function buildAppendixProjectPageContent(data) {
     ['unknown', 'Класс опасности не указан', groups.unknown],
   ]
     .filter(([, , wastes]) => wastes.length)
-    .map(([, title, wastes]) => buildAppendixGroupMarkdown(title, wastes))
+    .map(([, title, wastes]) => {
+      console.log('[code112] Building appendix group:', title, 'with', wastes.length, 'wastes');
+      return buildAppendixGroupMarkdown(title, wastes);
+    })
     .join('\n\n');
 
+  console.log('[code112] Appendix page content built with', data.wastes.length, 'wastes total');
   return `# Приложение к акту
 
 Файл DOCX: \`templates/docx/inventory_act/appendix_template.docx\`
@@ -1486,6 +1504,7 @@ ${groupBlocks || 'Отходы пока не добавлены. Загрузи�
 }
 
 function buildSourcesProjectPageContent(data) {
+  console.log('[code112] Building sources page content with', data.wastes.length, 'wastes');
   const wastes = [...data.wastes].sort(compareWasteCodes);
   const rows = wastes.map((waste, index) => {
     const values = sourceRows({ wastes: [waste] })[0];
@@ -1498,6 +1517,7 @@ function buildSourcesProjectPageContent(data) {
       '[количество_кг_шт]',
     ].map(escapeMarkdownTableCell).join(' | ')} |`;
   });
+  console.log('[code112] Sources page content built with', rows.length, 'rows');
   return `# Источники образования отходов
 
 Файл DOCX: \`templates/docx/inventory_act/sources_template.docx\`
@@ -1511,6 +1531,7 @@ ${rows.join('\n') || '| [номер_источника] | [источник] | [
 }
 
 function buildWasteFormationProjectPageContent(data) {
+  console.log('[code112] Building waste formation page content with', data.wastes.length, 'wastes');
   const wastes = [...data.wastes].sort(compareWasteCodes);
   const rows = wastes.map((waste) => {
     const values = wasteGenerationRows({ wastes: [waste] })[0];
@@ -1529,6 +1550,7 @@ function buildWasteFormationProjectPageContent(data) {
       waste.hazardClass || '[класс]',
     ].map(escapeMarkdownTableCell).join(' | ')} |`;
   });
+  console.log('[code112] Waste formation page content built with', rows.length, 'rows');
   return `# Образование отходов
 
 Файл DOCX: \`templates/docx/inventory_act/waste_generation_template.docx\`
