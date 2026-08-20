@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question } from './generators/code112.js';
+import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, syncCode112ProjectPages } from './generators/code112.js';
 import {
   buildMemoryLoadedMessage,
   buildMemorySystemPrompt,
@@ -255,6 +255,7 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
       project.extractedData.code112 = project.extractedData.code112 || {};
       project.extractedData.code112.data = project.extractedData.code112.data || {};
       project.extractedData.code112.data.Название_организации = organizationName;
+      project.extractedData.code112.startedAt = project.extractedData.code112.startedAt || now;
       
       console.log('[stateMachine] Organization name set in code112.data:', organizationName);
       console.log('[stateMachine] Calling generateCode112 to create pages');
@@ -262,9 +263,21 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
       addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
       addAgentMessage(project, `Организация: ${organizationName}`, now);
       
-      // Call generateCode112 to create pages after organization name is set
+      // Call generateCode112 to initialize state and messages
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
-      return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+      const result = await generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+      
+      // Force create pages for quick launch
+      const state = result.extractedData?.code112;
+      if (state) {
+        console.log('[stateMachine] Forcing code112 project page creation for quick launch');
+        await syncCode112ProjectPages(result, state, context.docsPath, now, { activateDocumentKey: 'appendix' });
+        console.log('[stateMachine] Quick launch pages created and docs.json synchronized');
+      } else {
+        console.warn('[stateMachine] No code112 state found after generateCode112, cannot create pages');
+      }
+      
+      return result;
     }
   }
 

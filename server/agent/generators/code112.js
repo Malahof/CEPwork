@@ -1257,7 +1257,7 @@ function buildGeneratedFilesMessage(documents, state) {
   return ['Готово. Сформированы файлы:', ...links].join('\n');
 }
 
-async function syncCode112ProjectPages(project, state, docsPath, now, options = {}) {
+export async function syncCode112ProjectPages(project, state, docsPath, now, options = {}) {
   console.log('[code112] Синхронизация редактируемых страниц проекта', {
     docsPath,
     projectId: project.id,
