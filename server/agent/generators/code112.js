@@ -951,6 +951,11 @@ function ensureGeneratorState(project, now) {
     if (!project.extractedData.code112.data) {
       project.extractedData.code112.data = {};
     }
+    // Ensure critical fields are initialized
+    project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
+    project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
+    project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
+    project.extractedData.code112.wastes = Array.isArray(project.extractedData.code112.wastes) ? project.extractedData.code112.wastes : [];
   }
   
   project.extractedData.code112.awaitingOrganizationName = Boolean(project.extractedData.code112.awaitingOrganizationName);
@@ -962,7 +967,7 @@ function ensureGeneratorState(project, now) {
     ? project.extractedData.code112.extractedWasteList.map(normalizeWasteRow).filter((waste) => waste.code)
     : [];
   
-  console.log('[code112] State ensured, organization name:', project.extractedData.code112.data.Название_организации);
+  console.log('[code112] State ensured, organization name:', project.extractedData.code112.data.Название_организации, 'startedAt:', project.extractedData.code112.startedAt);
   return project.extractedData.code112;
 }
 
@@ -1258,9 +1263,10 @@ function buildGeneratedFilesMessage(documents, state) {
 }
 
 export async function syncCode112ProjectPages(project, state, docsPath, now, options = {}) {
-  console.log('[code112] Синхронизация редактируемых страниц проекта', {
-    docsPath,
+  console.log('[code112] syncCode112ProjectPages: started', {
     projectId: project.id,
+    organizationName: state.data.Название_организации,
+    docsPath,
   });
 
   const snapshot = await readDocsSnapshot(docsPath);
@@ -1268,13 +1274,13 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
   
   // Ensure snapshot.pages is an array
   if (!Array.isArray(snapshot.pages)) {
-    console.warn('[code112] snapshot.pages is not an array, initializing as empty array');
+    console.warn('[code112] syncCode112ProjectPages: snapshot.pages is not an array, initializing as empty array');
     snapshot.pages = [];
   }
   
   // Ensure snapshot.folders is an array
   if (!Array.isArray(snapshot.folders)) {
-    console.warn('[code112] snapshot.folders is not an array, initializing as empty array');
+    console.warn('[code112] syncCode112ProjectPages: snapshot.folders is not an array, initializing as empty array');
     snapshot.folders = [];
   }
   
@@ -1285,16 +1291,29 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
     order: 2,
     isExpanded: true,
   });
+  console.log('[code112] syncCode112ProjectPages: ensured in-progress folder');
 
   const projectFolderId = `agent-${project.id}`;
   const workFolderId = `agent-${project.id}-code112`;
+  
+  // Check if project folder exists
+  const existingProjectFolder = snapshot.folders.find((folder) => folder.id === projectFolderId);
+  if (!existingProjectFolder) {
+    console.log('[code112] syncCode112ProjectPages: project folder missing, creating...', { projectFolderId });
+  } else {
+    console.log('[code112] syncCode112ProjectPages: project folder exists', { projectFolderId, title: existingProjectFolder.title });
+  }
+  
+  const projectFolderName = state.data.Название_организации || projectFolderTitle(project, state, data) || 'Новый проект';
   ensureFolder(snapshot, {
     id: projectFolderId,
-    title: projectFolderTitle(project, state, data),
+    title: projectFolderName,
     parentId: 'in-progress',
     order: nextOrder(snapshot.folders.filter((folder) => folder.parentId === 'in-progress')),
     isExpanded: true,
   });
+  console.log('[code112] syncCode112ProjectPages: project folder created/updated', { projectFolderId, title: projectFolderName });
+  
   ensureFolder(snapshot, {
     id: workFolderId,
     title: 'Акт инвентаризации',
@@ -1302,6 +1321,7 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
     order: 0,
     isExpanded: true,
   });
+  console.log('[code112] syncCode112ProjectPages: work folder created/updated', { workFolderId });
 
   state.docs = {
     projectFolderId,
@@ -1334,17 +1354,21 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
     }
   }
 
+  const pagesCreated = snapshot.pages.filter((page) => page.parentId === workFolderId).length;
+  console.log('[code112] syncCode112ProjectPages: added', pagesCreated, 'pages to work folder', workFolderId);
+
   if (options.activateDocumentKey) {
     snapshot.activePageId = code112PageId(project.id, options.activateDocumentKey);
-    console.log('[code112] Activating document:', options.activateDocumentKey);
+    console.log('[code112] syncCode112ProjectPages: activating document', options.activateDocumentKey);
   }
+  
   await writeDocsSnapshot(docsPath, snapshot);
-  console.log('[code112] docs.json синхронизирован', { 
+  console.log('[code112] syncCode112ProjectPages: docs.json saved', { 
     activePageId: snapshot.activePageId, 
-    pages: code112Documents.length,
-    refreshedAppendix: options.refreshAppendixContent,
-    refreshedSources: options.refreshSourcesContent,
-    refreshedWasteFormation: options.refreshWasteFormationContent
+    projectFolderId,
+    workFolderId,
+    pages: pagesCreated,
+    folders: snapshot.folders.length
   });
 }
 
