@@ -805,7 +805,7 @@ function sourceRows(data) {
     участок: waste.source || 'Участок не указан',
     код: waste.code,
     отход: waste.name,
-    количество_кг_шт: waste.unit === 'шт.' ? `${waste.amount || DASH} шт.` : `${formatNumber(parseNumber(waste.amountKg))} кг`,
+    количество_кг_шт: '[количество_кг_шт]',
   }));
 }
 
@@ -815,8 +815,8 @@ function wasteGenerationRows(data) {
     отход: waste.name,
     источник: waste.source || 'Источник не указан',
     'кол-во_участков': '1',
-    количество_т_шт: waste.unit === 'шт.' ? `${waste.amount || DASH} шт.` : formatAmount(waste),
-    количество: waste.unit === 'шт.' ? waste.amount || DASH : formatNumber(parseNumber(waste.amountKg)),
+    количество_т_шт: '[количество_т_шт]',
+    количество: formatAmount(waste),
     норматив: waste.normative || (waste.code === '9120400' ? '0,054 т / на 1 сотрудника в год' : DASH),
     физ_сост: waste.physicalState || 'не указано',
     состав: waste.composition || DASH,
@@ -1199,10 +1199,11 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
   state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'appendix',
-    refreshAppendixContent: true,
-    refreshWasteFormationContent: true,
+    refreshAllPages: true,
   });
-  console.log('[code112] Обновлены годовые количества для отходов:', state.extractedWasteList.filter((w) => isFilledTemplateValue(w.amount)).map((w) => w.code));
+  const updatedCodes = state.extractedWasteList.filter((w) => isFilledTemplateValue(w.amount)).map((w) => w.code);
+  console.log('[code112] Обновлены годовые количества для отходов:', updatedCodes.length);
+  console.log('[code112] Страницы обновлены после ввода количеств');
 
   const nextIndex = state.extractedWasteList.findIndex((waste) => !isFilledTemplateValue(waste.amount));
   if (nextIndex === -1) {
@@ -1267,23 +1268,56 @@ function buildQuantityQuestion(state) {
 async function startNormativeCollection(project, state, docsPath, now) {
   console.log('[code112] Starting normative collection');
   state.pendingDisposalConfirmation = null;
-  const firstIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isFilledTemplateValue(waste.normative));
+  const firstIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isConfirmedNormative(waste));
   if (firstIndex === -1) {
     console.log('[code112] No normatives needed (all zero quantities or already filled)');
     return completeExtractedWasteFill(project, state, docsPath, now);
   }
-  state.awaitingNormatives = { index: firstIndex };
+  const waste = state.extractedWasteList[firstIndex];
+  const needsInput = isFilledTemplateValue(waste.normative);
+  state.awaitingNormatives = { index: firstIndex, needsInput };
   state.updatedAt = now;
   project.updatedAt = now;
   askUser(project, buildNormativeQuestion(state), [], now);
   return project;
 }
 
+function isConfirmedNormative(waste) {
+  return Boolean(waste.normativeConfirmed);
+}
+
 async function handleNormativeInput(project, state, answer, docsPath, now) {
   console.log('[code112] Handling normative input:', answer);
-  const list = parseNormativeList(answer);
-  let applied = 0;
+  const currentIndex = state.awaitingNormatives?.index ?? 0;
+  const current = state.extractedWasteList[currentIndex];
 
+  if (!current || parseNumber(current.amount) <= 0) {
+    console.warn('[code112] No current waste for normative input');
+    state.awaitingNormatives = null;
+    return completeExtractedWasteFill(project, state, docsPath, now);
+  }
+
+  // If we are in confirmation mode (existing normative), handle yes/no first
+  if (state.awaitingNormatives && !state.awaitingNormatives.needsInput) {
+    const normalized = normalizeAnswer(answer);
+    if (isYesAnswer(normalized)) {
+      current.normativeConfirmed = true;
+      console.log('[code112] Existing normative confirmed for', current.code);
+      return advanceNormativeCollection(project, state, docsPath, now);
+    }
+    if (isNoAnswer(normalized)) {
+      console.log('[code112] Existing normative rejected for', current.code, ', asking for new value');
+      state.awaitingNormatives.needsInput = true;
+      askUser(project, buildNormativeQuestion(state), [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    // Any other input may be a new normative, treat as entering new value
+    state.awaitingNormatives.needsInput = true;
+  }
+
+  let applied = 0;
+  const list = parseNormativeList(answer);
   if (list.length) {
     for (const { code, normative } of list) {
       if (applyNormativeToWaste(state, code, normative)) {
@@ -1291,18 +1325,18 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
       }
     }
     console.log('[code112] Applied normatives from list:', applied, 'of', list.length);
-  } else {
-    const currentIndex = state.awaitingNormatives?.index ?? 0;
-    const current = state.extractedWasteList[currentIndex];
-    if (current && isFilledTemplateValue(answer)) {
-      current.normative = answer.trim();
-      const stateWaste = state.wastes.find((waste) => waste.code === current.code && normalizeAnswer(waste.name) === normalizeAnswer(current.name));
-      if (stateWaste) stateWaste.normative = current.normative;
-      applied++;
-      console.log('[code112] Applied normative for', current.code);
-    } else {
-      console.warn('[code112] Could not parse normative from:', answer);
+  } else if (isFilledTemplateValue(answer)) {
+    current.normative = answer.trim();
+    current.normativeConfirmed = true;
+    const stateWaste = state.wastes.find((waste) => waste.code === current.code && normalizeAnswer(waste.name) === normalizeAnswer(current.name));
+    if (stateWaste) {
+      stateWaste.normative = current.normative;
+      stateWaste.normativeConfirmed = true;
     }
+    applied++;
+    console.log('[code112] Applied normative for', current.code);
+  } else {
+    console.warn('[code112] Could not parse normative from:', answer);
   }
 
   if (!applied) {
@@ -1315,18 +1349,24 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
   state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'appendix',
-    refreshAppendixContent: true,
-    refreshWasteFormationContent: true,
+    refreshAllPages: true,
   });
+  console.log('[code112] Страницы обновлены после ввода нормативов');
 
-  const nextIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isFilledTemplateValue(waste.normative));
+  return advanceNormativeCollection(project, state, docsPath, now);
+}
+
+async function advanceNormativeCollection(project, state, docsPath, now) {
+  const nextIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isConfirmedNormative(waste));
   if (nextIndex === -1) {
     console.log('[code112] All normatives collected, completing appendix fill');
     state.awaitingNormatives = null;
     return completeExtractedWasteFill(project, state, docsPath, now);
   }
 
-  state.awaitingNormatives = { index: nextIndex };
+  const waste = state.extractedWasteList[nextIndex];
+  const needsInput = isFilledTemplateValue(waste.normative);
+  state.awaitingNormatives = { index: nextIndex, needsInput };
   askUser(project, buildNormativeQuestion(state), [], now);
   project.updatedAt = now;
   return project;
@@ -1355,8 +1395,12 @@ function applyNormativeToWaste(state, code, normative) {
     return false;
   }
   target.normative = normative.trim();
+  target.normativeConfirmed = true;
   const stateWaste = state.wastes.find((waste) => waste.code === code && normalizeAnswer(waste.name) === normalizeAnswer(target.name));
-  if (stateWaste) stateWaste.normative = target.normative;
+  if (stateWaste) {
+    stateWaste.normative = target.normative;
+    stateWaste.normativeConfirmed = true;
+  }
   console.log('[code112] Normative set for', code, ':', target.normative);
   return true;
 }
@@ -1366,6 +1410,9 @@ function buildNormativeQuestion(state) {
   const waste = state.extractedWasteList[index];
   if (!waste) {
     return 'Укажите норматив образования отхода. Пример: 0,0002 т на 1 т сырья.';
+  }
+  if (state.awaitingNormatives && !state.awaitingNormatives.needsInput && isFilledTemplateValue(waste.normative)) {
+    return `Для отхода ${waste.code} (${waste.name}) норматив уже установлен: ${waste.normative}. Подтвердить? Да / Нет`;
   }
   return `Для отхода ${waste.code} (${waste.name}) укажите норматив образования. Пример: 0,0002 т на 1 т сырья.`;
 }
@@ -1758,6 +1805,12 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
 }
 
 function refreshedProjectPageContent(document, data, options) {
+  if (options.refreshAllPages) {
+    if (document.key === 'appendix') return buildAppendixProjectPageContent(data);
+    if (document.key === 'sources') return buildSourcesProjectPageContent(data);
+    if (document.key === 'wasteFormation') return buildWasteFormationProjectPageContent(data);
+    return null;
+  }
   if (options.refreshAppendixContent && document.key === 'appendix') return buildAppendixProjectPageContent(data);
   if (options.refreshSourcesContent && document.key === 'sources') return buildSourcesProjectPageContent(data);
   if (options.refreshWasteFormationContent && document.key === 'wasteFormation') return buildWasteFormationProjectPageContent(data);
