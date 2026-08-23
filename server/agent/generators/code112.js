@@ -956,6 +956,21 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
     project.extractedData.code112.wastes = Array.isArray(project.extractedData.code112.wastes) ? project.extractedData.code112.wastes : [];
+    if (!project.extractedData.code112.files) {
+      project.extractedData.code112.files = Object.fromEntries(
+        code112Documents.map((document) => [
+          document.key,
+          {
+            key: document.key,
+            label: document.label,
+            status: 'pending',
+            fileName: document.fileName,
+            downloadUrl: null,
+            generatedAt: null,
+          },
+        ])
+      );
+    }
   }
   
   project.extractedData.code112.awaitingOrganizationName = Boolean(project.extractedData.code112.awaitingOrganizationName);
@@ -1329,45 +1344,69 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
     updatedAt: now,
   };
 
-  for (const document of code112Documents) {
+  // Explicitly create all 5 project pages with logging
+  const pageParentId = workFolderId;
+  const addedKeys = [];
+  for (let i = 0; i < code112Documents.length; i++) {
+    const document = code112Documents[i];
     const pageId = code112PageId(project.id, document.key);
-    const existingPage = snapshot.pages.find((item) => item.id === pageId);
+    console.log('[code112] syncCode112ProjectPages: adding page', document.key, '...');
+    
+    let existingPage = null;
+    let existingPageIndex = -1;
+    try {
+      existingPageIndex = snapshot.pages.findIndex((item) => item && item.id === pageId);
+      existingPage = existingPageIndex >= 0 ? snapshot.pages[existingPageIndex] : null;
+    } catch (e) {
+      console.warn('[code112] syncCode112ProjectPages: error finding existing page', document.key, e.message);
+    }
+    
     const refreshedContent = refreshedProjectPageContent(document, data, options);
+    const templateContent = buildEditableTemplatePageContent(document);
+    const file = state.files && state.files[document.key] ? state.files[document.key] : null;
+    
     const page = {
       id: pageId,
       title: document.label,
-      content: refreshedContent ?? existingPage?.content ?? buildEditableTemplatePageContent(document),
-      parentId: workFolderId,
-      order: code112Documents.findIndex((item) => item.key === document.key),
+      content: options.force ? (templateContent) : (refreshedContent ?? existingPage?.content ?? templateContent),
+      parentId: pageParentId,
+      order: i,
       createdAt: existingPage?.createdAt ?? now,
       updatedAt: now,
-      templateValues: pageTemplateValues(document, data, state.files[document.key]),
+      templateValues: pageTemplateValues(document, data, file),
     };
-    const existingPageIndex = snapshot.pages.findIndex((item) => item.id === pageId);
+    
     if (existingPageIndex === -1) {
       snapshot.pages.push(page);
+      console.log('[code112] syncCode112ProjectPages: page', document.key, 'added');
     } else {
       snapshot.pages[existingPageIndex] = {
-        ...snapshot.pages[existingPageIndex],
+        ...existingPage,
         ...page,
       };
+      console.log('[code112] syncCode112ProjectPages: page', document.key, 'updated');
     }
+    addedKeys.push(document.key);
   }
 
-  const pagesCreated = snapshot.pages.filter((page) => page.parentId === workFolderId).length;
-  console.log('[code112] syncCode112ProjectPages: added', pagesCreated, 'pages to work folder', workFolderId);
+  const pagesInWorkFolder = snapshot.pages.filter((page) => page && page.parentId === pageParentId).length;
+  console.log('[code112] syncCode112ProjectPages: all', addedKeys.length, 'pages added/updated in', pageParentId, '(total in work folder:', pagesInWorkFolder, ')');
 
+  // Set active page based on the requested document key
   if (options.activateDocumentKey) {
-    snapshot.activePageId = code112PageId(project.id, options.activateDocumentKey);
-    console.log('[code112] syncCode112ProjectPages: activating document', options.activateDocumentKey);
+    const requestedPageId = code112PageId(project.id, options.activateDocumentKey);
+    snapshot.activePageId = requestedPageId;
+    console.log('[code112] syncCode112ProjectPages: activePageId set to', requestedPageId);
   }
-  
+
   await writeDocsSnapshot(docsPath, snapshot);
   console.log('[code112] syncCode112ProjectPages: docs.json saved', { 
     activePageId: snapshot.activePageId, 
     projectFolderId,
     workFolderId,
-    pages: pagesCreated,
+    pages: addedKeys.length,
+    pagesInWorkFolder,
+    addedKeys,
     folders: snapshot.folders.length
   });
 }
@@ -1664,7 +1703,7 @@ function isFilledTemplateValue(value) {
   return typeof value === 'string' && value.trim() && !/^\[[^\]]+\]$/.test(value.trim());
 }
 
-async function readDocsSnapshot(docsPath) {
+export async function readDocsSnapshot(docsPath) {
   try {
     const parsed = JSON.parse(await readFile(docsPath, 'utf8'));
     return normalizeDocsSnapshot(parsed);

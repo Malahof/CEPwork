@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, syncCode112ProjectPages } from './generators/code112.js';
+import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, readDocsSnapshot, syncCode112ProjectPages } from './generators/code112.js';
 import {
   buildMemoryLoadedMessage,
   buildMemorySystemPrompt,
@@ -272,7 +272,25 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
       if (state) {
         console.log('[stateMachine] Forcing code112 project page creation for quick launch');
         await syncCode112ProjectPages(result, state, context.docsPath, now, { activateDocumentKey: 'appendix' });
-        console.log('[stateMachine] Quick launch pages created and docs.json synchronized');
+        
+        // Verify titleAct page was actually created
+        const expectedPageId = `agent-${result.id}-code112-titleAct`;
+        let titleActPage = null;
+        try {
+          const snapshot = await readDocsSnapshot(context.docsPath);
+          titleActPage = snapshot.pages.find((page) => page.id === expectedPageId);
+          console.log('[stateMachine] Quick launch titleAct page check', { expectedPageId, found: !!titleActPage });
+        } catch (e) {
+          console.warn('[stateMachine] Quick launch could not read docs snapshot for verification', e.message);
+        }
+        
+        if (!titleActPage) {
+          console.warn('[stateMachine] titleAct page still undefined after first sync, calling syncCode112ProjectPages with force: true');
+          await syncCode112ProjectPages(result, state, context.docsPath, now, { activateDocumentKey: 'appendix', force: true });
+          console.log('[stateMachine] Quick launch pages forced and docs.json synchronized');
+        } else {
+          console.log('[stateMachine] Quick launch pages created and docs.json synchronized');
+        }
       } else {
         console.warn('[stateMachine] No code112 state found after generateCode112, cannot create pages');
       }
