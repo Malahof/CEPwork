@@ -307,16 +307,19 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
     memory: null,
   });
 
+  // 1. Collect annual quantities for the two extracted wastes
   await generate(project, {
-    answer: 'захоронение',
+    answer: '9120400: 0,054; 1140202: 1,2',
     now: 6,
     outputDir: tempDir,
     docsPath,
     memory: null,
   });
+
+  // 2. Collect normatives for non-zero quantities
   await generate(project, {
-    answer: 'захоронение',
-    now: 7,
+    answer: '9120400: 0,054 т / на 1 сотрудника в год; 1140202: 0,0002 т на 1 т',
+    now: 9,
     outputDir: tempDir,
     docsPath,
     memory: null,

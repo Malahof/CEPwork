@@ -250,13 +250,16 @@ export async function generate(projectData, userSources = {}) {
     if (isYesAnswer(normalized) || isUploadedWasteCommand(answer)) {
       return fillAppendixFromExtractedWastes(projectData, state, docsPath, now, { explicit: true, refreshAllPages: true });
     }
+    if (state.pendingWasteImport.stage === 'edit') {
+      return handleWasteListEdit(projectData, state, answer, docsPath, now);
+    }
     if (isNoAnswer(normalized)) {
-      state.pendingWasteImport = null;
-      askUser(projectData, 'Хорошо, не заполняю приложение из загруженного файла. К чему теперь приступить?', menuOptions(), now);
+      state.pendingWasteImport = { ...state.pendingWasteImport, stage: 'edit' };
+      askUser(projectData, buildWasteEditQuestion(state), [], now);
       projectData.updatedAt = now;
       return projectData;
     }
-    askUser(projectData, buildWasteImportQuestion(state), confirmationOptions(), now);
+    askUser(projectData, buildWasteReviewQuestion(state), confirmationOptions(), now);
     projectData.updatedAt = now;
     return projectData;
   }
@@ -1192,12 +1195,21 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
     return project;
   }
 
+  // Update wastes and pages so the preview reflects entered quantities
+  state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'appendix',
+    refreshAppendixContent: true,
+    refreshWasteFormationContent: true,
+  });
+  console.log('[code112] Обновлены годовые количества для отходов:', state.extractedWasteList.filter((w) => isFilledTemplateValue(w.amount)).map((w) => w.code));
+
   const nextIndex = state.extractedWasteList.findIndex((waste) => !isFilledTemplateValue(waste.amount));
   if (nextIndex === -1) {
-    console.log('[code112] All quantities collected, proceeding to disposal confirmation');
+    console.log('[code112] All quantities collected, proceeding to normative collection');
     state.awaitingQuantities = null;
     state.quantityInputMode = null;
-    return askNextDisposalConfirmation(project, state, docsPath, now);
+    return startNormativeCollection(project, state, docsPath, now);
   }
 
   state.awaitingQuantities = { index: nextIndex };
@@ -1299,6 +1311,14 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
     return project;
   }
 
+  // Sync pages so the preview reflects updated normatives
+  state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'appendix',
+    refreshAppendixContent: true,
+    refreshWasteFormationContent: true,
+  });
+
   const nextIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isFilledTemplateValue(waste.normative));
   if (nextIndex === -1) {
     console.log('[code112] All normatives collected, completing appendix fill');
@@ -1385,8 +1405,99 @@ function buildWasteReviewQuestion(state) {
   return [
     `Из файла извлечено ${state.extractedWasteList.length} отходов. Страницы (Приложение, Источники, Образование) обновлены.`,
     'Проверьте данные в предпросмотре.',
-    'Всё верно? Да / Нет (тогда введите вручную).',
+    'Всё верно? Да / Нет.',
   ].join('\n');
+}
+
+function buildWasteEditQuestion(state) {
+  const list = state.extractedWasteList.map((w) => `${w.code} — ${w.name}`).join('\n');
+  return [
+    'Вы можете добавить или удалить отходы из списка. Введите команды:',
+    'Добавить: 9120300; 3134200',
+    'Удалить: 5820601; 1110406',
+    'Готово — завершить редактирование и перейти к вводу годовых количеств.',
+    '',
+    'Текущий список:',
+    list || '(список пуст)',
+  ].join('\n');
+}
+
+async function handleWasteListEdit(project, state, answer, docsPath, now) {
+  const normalized = normalizeAnswer(answer);
+  console.log('[code112] Handling waste list edit:', answer);
+
+  if (normalized === 'готово' || answer.trim().toLowerCase().startsWith('готово')) {
+    console.log('[code112] Waste editing finished, starting quantity collection');
+    state.pendingWasteImport = null;
+    if (!state.extractedWasteList.length) {
+      askUser(project, 'Список отходов пуст. Загрузите файл или добавьте отходы.', menuOptions(), now);
+      project.updatedAt = now;
+      return project;
+    }
+    return fillAppendixFromExtractedWastes(project, state, docsPath, now, { explicit: true, refreshAllPages: true });
+  }
+
+  const addMatch = answer.match(/добавить[:\s]*(.+)/iu);
+  const removeMatch = answer.match(/удалить[:\s]*(.+)/iu);
+
+  if (addMatch) {
+    const codes = addMatch[1].split(/[;,\s]+/).map((c) => c.trim()).filter(Boolean).filter((c) => /^\d{5,}$/.test(c));
+    if (codes.length) {
+      const classifierText = await readWasteClassifierText();
+      const newWastes = [];
+      for (const code of codes) {
+        if (state.extractedWasteList.some((w) => w.code === code)) continue;
+        const hazardClass = findHazardClassByCode(classifierText, code);
+        const newWaste = normalizeWasteRow({
+          code,
+          name: `Отход ${code}`,
+          hazardClass,
+          amount: '',
+          unit: 'т',
+          handling: '',
+          source: '',
+          physicalState: '',
+          normative: '',
+        });
+        newWastes.push(newWaste);
+      }
+      if (newWastes.length) {
+        const resolved = await resolveWasteDisposalMethods(newWastes);
+        state.extractedWasteList = mergeWastes(state.extractedWasteList, resolved).sort(compareWasteCodes);
+        state.wastes = mergeWastes(state.wastes, resolved).sort(compareWasteCodes);
+        console.log('[code112] Added wastes:', newWastes.map((w) => w.code));
+      }
+      await syncCode112ProjectPages(project, state, docsPath, now, {
+        refreshAppendixContent: true,
+        refreshSourcesContent: true,
+        refreshWasteFormationContent: true,
+      });
+    }
+    askUser(project, buildWasteEditQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (removeMatch) {
+    const codes = removeMatch[1].split(/[;,\s]+/).map((c) => c.trim()).filter(Boolean).filter((c) => /^\d{5,}$/.test(c));
+    if (codes.length) {
+      state.extractedWasteList = state.extractedWasteList.filter((w) => !codes.includes(w.code));
+      state.wastes = state.wastes.filter((w) => !codes.includes(w.code));
+      console.log('[code112] Removed wastes:', codes);
+      await syncCode112ProjectPages(project, state, docsPath, now, {
+        refreshAppendixContent: true,
+        refreshSourcesContent: true,
+        refreshWasteFormationContent: true,
+      });
+    }
+    askUser(project, buildWasteEditQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  askUser(project, buildWasteEditQuestion(state), [], now);
+  project.updatedAt = now;
+  return project;
 }
 
 function shouldConfirmDisposal(waste) {
@@ -1848,8 +1959,8 @@ function buildWasteFormationProjectPageContent(data) {
       waste.name,
       '[источник]',
       '[кол-во_участков]',
-      values.количество_т_шт || '[количество_т_шт]',
-      '[количество]',
+      '[количество_т_шт]',
+      values.количество || '[количество]',
       waste.normative || '[норматив]',
       '[физ_сост]',
       '[состав]',
