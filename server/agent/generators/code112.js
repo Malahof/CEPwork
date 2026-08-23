@@ -1172,6 +1172,7 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
   let applied = 0;
 
   if (list.length) {
+    resetAllQuantities(state);
     for (const { code, amount } of list) {
       if (applyQuantityToWaste(state, code, amount)) {
         applied++;
@@ -1205,6 +1206,14 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
   console.log('[code112] Обновлены годовые количества для отходов:', updatedCodes.length);
   console.log('[code112] Страницы обновлены после ввода количеств');
 
+  // If a list was entered, treat it as the definitive set and move to normatives
+  if (list.length) {
+    console.log('[code112] Quantity list processed, proceeding to normative collection');
+    state.awaitingQuantities = null;
+    state.quantityInputMode = null;
+    return startNormativeCollection(project, state, docsPath, now);
+  }
+
   const nextIndex = state.extractedWasteList.findIndex((waste) => !isFilledTemplateValue(waste.amount));
   if (nextIndex === -1) {
     console.log('[code112] All quantities collected, proceeding to normative collection');
@@ -1233,6 +1242,24 @@ function parseQuantityList(text) {
   return entries;
 }
 
+function resetAllQuantities(state) {
+  for (const waste of state.extractedWasteList) {
+    waste.amount = '';
+    waste.unit = 'т';
+    waste.amountKg = 0;
+  }
+  for (const waste of state.wastes) {
+    waste.amount = '';
+    waste.unit = 'т';
+    waste.amountKg = 0;
+  }
+  console.log('[code112] Cleared all quantities before applying list, count:', state.extractedWasteList.length);
+}
+
+function hasExplicitUnit(value) {
+  return /(?:^|\d)\s*(?:шт|штук|т|тонн|кг|килограмм)/iu.test(String(value));
+}
+
 function applyQuantityToWaste(state, code, amountText) {
   const parsed = parseAmountWithUnit(amountText);
   if (!parsed.amount || !/^\d/.test(parsed.amount.replace(',', '.'))) {
@@ -1243,16 +1270,21 @@ function applyQuantityToWaste(state, code, amountText) {
     console.warn('[code112] Quantity code not found in extracted list:', code);
     return false;
   }
+  const explicitUnit = hasExplicitUnit(amountText);
+  let unit = parsed.unit;
+  if (!explicitUnit && isMercuryWaste(target.code, target.name)) {
+    unit = 'шт.';
+  }
   target.amount = parsed.amount;
-  target.unit = parsed.unit;
-  target.amountKg = normalizeAmountKg(parsed.amount, parsed.unit);
+  target.unit = unit;
+  target.amountKg = normalizeAmountKg(parsed.amount, unit);
   const stateWaste = state.wastes.find((waste) => waste.code === code && normalizeAnswer(waste.name) === normalizeAnswer(target.name));
   if (stateWaste) {
     stateWaste.amount = parsed.amount;
-    stateWaste.unit = parsed.unit;
+    stateWaste.unit = unit;
     stateWaste.amountKg = target.amountKg;
   }
-  console.log('[code112] Quantity set for', code, ':', parsed.amount, parsed.unit);
+  console.log('[code112] Quantity set for', code, ':', parsed.amount, unit);
   return true;
 }
 
@@ -1494,13 +1526,20 @@ async function handleWasteListEdit(project, state, answer, docsPath, now) {
       const newWastes = [];
       for (const code of codes) {
         if (state.extractedWasteList.some((w) => w.code === code)) continue;
+        const entries = classifierEntriesForCode(classifierText, code);
+        const firstEntry = entries[0] || '';
         const hazardClass = findHazardClassByCode(classifierText, code);
+        const name = firstEntry ? extractWasteNameFromClassifierEntry(firstEntry, code) : `Отход ${code}`;
+        if (!firstEntry) {
+          console.warn('[code112] Waste name not found in classifier for code', code, ', using fallback');
+        }
+        console.log('[code112] Adding waste', code, 'name:', name, 'class:', hazardClass);
         const newWaste = normalizeWasteRow({
           code,
-          name: `Отход ${code}`,
+          name,
           hazardClass,
           amount: '',
-          unit: 'т',
+          unit: '',
           handling: '',
           source: '',
           physicalState: '',
@@ -1512,7 +1551,7 @@ async function handleWasteListEdit(project, state, answer, docsPath, now) {
         const resolved = await resolveWasteDisposalMethods(newWastes);
         state.extractedWasteList = mergeWastes(state.extractedWasteList, resolved).sort(compareWasteCodes);
         state.wastes = mergeWastes(state.wastes, resolved).sort(compareWasteCodes);
-        console.log('[code112] Added wastes:', newWastes.map((w) => w.code));
+        console.log('[code112] Added wastes:', newWastes.map((w) => ({ code: w.code, name: w.name, hazardClass: w.hazardClass, handling: w.suggestedHandling })));
       }
       await syncCode112ProjectPages(project, state, docsPath, now, {
         refreshAppendixContent: true,
@@ -2723,6 +2762,15 @@ function extractHazardClassFromClassifierEntry(entry) {
   if (/(?:четв[её]ртый|4(?:-й)?\s+класс|4\s*класса)/u.test(normalized)) return '4';
   if (/\*/u.test(normalized)) return '*';
   return '';
+}
+
+function extractWasteNameFromClassifierEntry(entry, code) {
+  const cleaned = entry.replace(/\r/g, ' ').replace(/\s+/g, ' ').trim();
+  const codeRe = new RegExp('^' + escapeRegExp(code) + '\\s*', 'u');
+  const withoutCode = cleaned.replace(codeRe, '').trim();
+  const classMatch = withoutCode.match(/(?:^|\s)(?:первый|второй|третий|четв[её]ртый|неопасный|1(?:-й)?\s+класс|2(?:-й)?\s+класс|3(?:-й)?\s+класс|4(?:-й)?\s+класс|неопасные)(?=$|\s)/iu);
+  const name = classMatch ? withoutCode.slice(0, classMatch.index).trim() : withoutCode.split(/\d{7}\s/).shift().trim();
+  return name || `Отход ${code}`;
 }
 
 function escapeRegExp(value) {
