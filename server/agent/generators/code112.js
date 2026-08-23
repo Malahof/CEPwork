@@ -223,17 +223,29 @@ export async function generate(projectData, userSources = {}) {
     return handleDisposalConfirmation(projectData, state, answer, docsPath, now);
   }
 
+  if (state.awaitingQuantities) {
+    return handleQuantityInput(projectData, state, answer, docsPath, now);
+  }
+
+  if (state.awaitingNormatives) {
+    return handleNormativeInput(projectData, state, answer, docsPath, now);
+  }
+
   if (state.pendingWasteImport) {
     const normalized = normalizeAnswer(answer);
     if (isGenerateAnswer(answer)) {
+      if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
+        askUser(projectData, buildWasteDataIncompleteMessage(state), menuOptions(), now);
+        projectData.updatedAt = now;
+        return projectData;
+      }
       state.pendingWasteImport = null;
       await generateDocuments(projectData, state, code112Documents, outputDir, docsPath, now);
       askUser(projectData, 'Все 5 документов по акту инвентаризации сформированы. К чему теперь приступить?', menuOptions(), now);
       return projectData;
     }
     if (state.pendingWasteImport.stage === 'review' && (isYesAnswer(normalized) || isUploadedWasteCommand(answer))) {
-      state.pendingWasteImport.stage = 'disposal';
-      return askNextDisposalConfirmation(projectData, state, docsPath, now);
+      return fillAppendixFromExtractedWastes(projectData, state, docsPath, now, { explicit: true, refreshAllPages: true });
     }
     if (isYesAnswer(normalized) || isUploadedWasteCommand(answer)) {
       return fillAppendixFromExtractedWastes(projectData, state, docsPath, now, { explicit: true, refreshAllPages: true });
@@ -276,6 +288,11 @@ export async function generate(projectData, userSources = {}) {
   }
 
   if (isGenerateAnswer(answer)) {
+    if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
+      askUser(projectData, buildWasteDataIncompleteMessage(state), menuOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
     await generateDocuments(projectData, state, code112Documents, outputDir, docsPath, now);
     askUser(
       projectData,
@@ -335,6 +352,8 @@ export function getCode112Question(project) {
   if (state.awaitingOrganizationName) return organizationNameQuestion();
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.pendingDisposalConfirmation) return 'Подтвердите способ обращения с отходом.';
+  if (state.awaitingQuantities) return buildQuantityQuestion(state);
+  if (state.awaitingNormatives) return buildNormativeQuestion(state);
   if (state.activeDocument) return `Цэпик работает над файлом: ${documentByKey.get(state.activeDocument)?.label ?? state.activeDocument}`;
   return 'К чему теперь приступить?';
 }
@@ -346,6 +365,8 @@ export function getCode112Options(project) {
   if (state.memory?.pendingOrganization) return confirmationOptions();
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingDisposalConfirmation) return disposalConfirmationOptions();
+  if (state.awaitingQuantities) return [];
+  if (state.awaitingNormatives) return [];
   if (state.awaitingOrganizationName) return [];
   if (state.activeDocument) return documentWorkOptions();
   return menuOptions();
@@ -484,7 +505,8 @@ async function askNextDisposalConfirmation(project, state, docsPath, now) {
   if (index === -1) {
     state.pendingDisposalConfirmation = null;
     state.pendingWasteImport = null;
-    return fillAppendixFromExtractedWastes(project, state, docsPath, now, { explicit: true, refreshAllPages: true });
+    console.log('[code112] All disposal methods confirmed, starting normative collection');
+    return startNormativeCollection(project, state, docsPath, now);
   }
 
   state.pendingDisposalConfirmation = { wasteKey: wasteKey(state.extractedWasteList[index]), createdAt: now };
@@ -494,8 +516,10 @@ async function askNextDisposalConfirmation(project, state, docsPath, now) {
 }
 
 async function handleDisposalConfirmation(project, state, answer, docsPath, now) {
+  console.log('[code112] Handling disposal confirmation:', answer);
   const pendingKey = state.pendingDisposalConfirmation?.wasteKey;
   const index = state.extractedWasteList.findIndex((waste) => wasteKey(waste) === pendingKey);
+  console.log('[code112] Disposal pending key:', pendingKey, 'index:', index);
   if (index === -1) {
     state.pendingDisposalConfirmation = null;
     return askNextDisposalConfirmation(project, state, docsPath, now);
@@ -919,6 +943,9 @@ function ensureGeneratorState(project, now) {
       pendingWasteImport: null,
       pendingDisposalConfirmation: null,
       awaitingWasteDetails: null,
+      awaitingQuantities: null,
+      awaitingNormatives: null,
+      quantityInputMode: null,
       data: {},
       wastes: [],
       extractedWasteList: [],
@@ -978,6 +1005,9 @@ function ensureGeneratorState(project, now) {
   project.extractedData.code112.pendingWasteImport = project.extractedData.code112.pendingWasteImport ?? null;
   project.extractedData.code112.pendingDisposalConfirmation = project.extractedData.code112.pendingDisposalConfirmation ?? null;
   project.extractedData.code112.awaitingWasteDetails = project.extractedData.code112.awaitingWasteDetails ?? null;
+  project.extractedData.code112.awaitingQuantities = project.extractedData.code112.awaitingQuantities ?? null;
+  project.extractedData.code112.awaitingNormatives = project.extractedData.code112.awaitingNormatives ?? null;
+  project.extractedData.code112.quantityInputMode = project.extractedData.code112.quantityInputMode ?? null;
   project.extractedData.code112.extractedWasteList = Array.isArray(project.extractedData.code112.extractedWasteList)
     ? project.extractedData.code112.extractedWasteList.map(normalizeWasteRow).filter((waste) => waste.code)
     : [];
@@ -1047,6 +1077,10 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
   }
 
   if (isGenerateAnswer(answer)) {
+    if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
+      askUser(project, buildWasteDataIncompleteMessage(state), documentWorkOptions(), now);
+      return project;
+    }
     state.activeDocument = null;
     await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
     askUser(project, 'Все 5 документов по акту инвентаризации сформированы. К чему теперь приступить?', menuOptions(), now);
@@ -1111,32 +1145,233 @@ async function fillAppendixFromExtractedWastes(project, state, docsPath, now, op
   state.files.appendix.status = 'in_progress';
   state.awaitingWasteDetails = nextMissingWasteDetails(state.wastes);
   
-  console.log('[code112] Syncing project pages with extracted wastes');
+  console.log('[code112] Starting quantity collection for extracted wastes');
+  return startQuantityCollection(project, state, docsPath, now);
+}
+
+function startQuantityCollection(project, state, docsPath, now) {
+  console.log('[code112] Starting quantity collection');
+  state.awaitingWasteDetails = null;
+  state.pendingWasteImport = null;
+  state.activeDocument = 'appendix';
+  state.files.appendix.status = 'in_progress';
+  state.awaitingQuantities = { index: 0 };
+  state.quantityInputMode = 'single';
+  state.updatedAt = now;
+  project.updatedAt = now;
+  askUser(project, buildQuantityQuestion(state), [], now);
+  return project;
+}
+
+async function handleQuantityInput(project, state, answer, docsPath, now) {
+  console.log('[code112] Handling quantity input:', answer);
+  const list = parseQuantityList(answer);
+  let applied = 0;
+
+  if (list.length) {
+    for (const { code, amount } of list) {
+      if (applyQuantityToWaste(state, code, amount)) {
+        applied++;
+      }
+    }
+    console.log('[code112] Applied quantities from list:', applied, 'of', list.length);
+  } else {
+    const currentIndex = state.awaitingQuantities?.index ?? 0;
+    const current = state.extractedWasteList[currentIndex];
+    if (current && applyQuantityToWaste(state, current.code, answer)) {
+      applied++;
+      console.log('[code112] Applied quantity for', current.code);
+    } else {
+      console.warn('[code112] Could not parse quantity from:', answer);
+    }
+  }
+
+  if (!applied) {
+    askUser(project, buildQuantityQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  const nextIndex = state.extractedWasteList.findIndex((waste) => !isFilledTemplateValue(waste.amount));
+  if (nextIndex === -1) {
+    console.log('[code112] All quantities collected, proceeding to disposal confirmation');
+    state.awaitingQuantities = null;
+    state.quantityInputMode = null;
+    return askNextDisposalConfirmation(project, state, docsPath, now);
+  }
+
+  state.awaitingQuantities = { index: nextIndex };
+  state.quantityInputMode = 'single';
+  askUser(project, buildQuantityQuestion(state), [], now);
+  project.updatedAt = now;
+  return project;
+}
+
+function parseQuantityList(text) {
+  const entries = [];
+  const parts = String(text).split(/[;\n]/).map((part) => part.trim()).filter(Boolean);
+  for (const part of parts) {
+    const match = part.match(/^(\d{5,})\s*[:=]\s*(.+)$/);
+    if (match) {
+      entries.push({ code: match[1], amount: match[2].trim() });
+    }
+  }
+  console.log('[code112] Parsed quantity list:', entries.length, 'entries');
+  return entries;
+}
+
+function applyQuantityToWaste(state, code, amountText) {
+  const parsed = parseAmountWithUnit(amountText);
+  if (!parsed.amount || !/^\d/.test(parsed.amount.replace(',', '.'))) {
+    return false;
+  }
+  const target = state.extractedWasteList.find((waste) => waste.code === code);
+  if (!target) {
+    console.warn('[code112] Quantity code not found in extracted list:', code);
+    return false;
+  }
+  target.amount = parsed.amount;
+  target.unit = parsed.unit;
+  target.amountKg = normalizeAmountKg(parsed.amount, parsed.unit);
+  const stateWaste = state.wastes.find((waste) => waste.code === code && normalizeAnswer(waste.name) === normalizeAnswer(target.name));
+  if (stateWaste) {
+    stateWaste.amount = parsed.amount;
+    stateWaste.unit = parsed.unit;
+    stateWaste.amountKg = target.amountKg;
+  }
+  console.log('[code112] Quantity set for', code, ':', parsed.amount, parsed.unit);
+  return true;
+}
+
+function buildQuantityQuestion(state) {
+  const index = state.awaitingQuantities?.index ?? 0;
+  const waste = state.extractedWasteList[index];
+  if (!waste) {
+    return 'Укажите годовое количество для каждого отхода. Пример: 0,054 т или 12 шт. Можно ввести список: 9120400: 0,054; 1140202: 1,2.';
+  }
+  return `Для отхода ${waste.code} (${waste.name}) укажите годовое количество. Пример: 0,054 т или 12 шт. Можно сразу ввести список: 9120400: 0,054; 1140202: 1,2.`;
+}
+
+async function startNormativeCollection(project, state, docsPath, now) {
+  console.log('[code112] Starting normative collection');
+  state.pendingDisposalConfirmation = null;
+  const firstIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isFilledTemplateValue(waste.normative));
+  if (firstIndex === -1) {
+    console.log('[code112] No normatives needed (all zero quantities or already filled)');
+    return completeExtractedWasteFill(project, state, docsPath, now);
+  }
+  state.awaitingNormatives = { index: firstIndex };
+  state.updatedAt = now;
+  project.updatedAt = now;
+  askUser(project, buildNormativeQuestion(state), [], now);
+  return project;
+}
+
+async function handleNormativeInput(project, state, answer, docsPath, now) {
+  console.log('[code112] Handling normative input:', answer);
+  const list = parseNormativeList(answer);
+  let applied = 0;
+
+  if (list.length) {
+    for (const { code, normative } of list) {
+      if (applyNormativeToWaste(state, code, normative)) {
+        applied++;
+      }
+    }
+    console.log('[code112] Applied normatives from list:', applied, 'of', list.length);
+  } else {
+    const currentIndex = state.awaitingNormatives?.index ?? 0;
+    const current = state.extractedWasteList[currentIndex];
+    if (current && isFilledTemplateValue(answer)) {
+      current.normative = answer.trim();
+      const stateWaste = state.wastes.find((waste) => waste.code === current.code && normalizeAnswer(waste.name) === normalizeAnswer(current.name));
+      if (stateWaste) stateWaste.normative = current.normative;
+      applied++;
+      console.log('[code112] Applied normative for', current.code);
+    } else {
+      console.warn('[code112] Could not parse normative from:', answer);
+    }
+  }
+
+  if (!applied) {
+    askUser(project, buildNormativeQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  const nextIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isFilledTemplateValue(waste.normative));
+  if (nextIndex === -1) {
+    console.log('[code112] All normatives collected, completing appendix fill');
+    state.awaitingNormatives = null;
+    return completeExtractedWasteFill(project, state, docsPath, now);
+  }
+
+  state.awaitingNormatives = { index: nextIndex };
+  askUser(project, buildNormativeQuestion(state), [], now);
+  project.updatedAt = now;
+  return project;
+}
+
+function parseNormativeList(text) {
+  const entries = [];
+  const parts = String(text).split(/[;\n]/).map((part) => part.trim()).filter(Boolean);
+  for (const part of parts) {
+    const match = part.match(/^(\d{5,})\s*[:=]\s*(.+)$/);
+    if (match) {
+      entries.push({ code: match[1], normative: match[2].trim() });
+    }
+  }
+  console.log('[code112] Parsed normative list:', entries.length, 'entries');
+  return entries;
+}
+
+function applyNormativeToWaste(state, code, normative) {
+  const target = state.extractedWasteList.find((waste) => waste.code === code);
+  if (!target || parseNumber(target.amount) <= 0) {
+    console.warn('[code112] Normative target not found or zero quantity:', code);
+    return false;
+  }
+  if (!isFilledTemplateValue(normative)) {
+    return false;
+  }
+  target.normative = normative.trim();
+  const stateWaste = state.wastes.find((waste) => waste.code === code && normalizeAnswer(waste.name) === normalizeAnswer(target.name));
+  if (stateWaste) stateWaste.normative = target.normative;
+  console.log('[code112] Normative set for', code, ':', target.normative);
+  return true;
+}
+
+function buildNormativeQuestion(state) {
+  const index = state.awaitingNormatives?.index ?? 0;
+  const waste = state.extractedWasteList[index];
+  if (!waste) {
+    return 'Укажите норматив образования отхода. Пример: 0,0002 т на 1 т сырья.';
+  }
+  return `Для отхода ${waste.code} (${waste.name}) укажите норматив образования. Пример: 0,0002 т на 1 т сырья.`;
+}
+
+async function completeExtractedWasteFill(project, state, docsPath, now) {
+  console.log('[code112] Completing appendix fill from extracted wastes');
+  state.awaitingQuantities = null;
+  state.quantityInputMode = null;
+  state.awaitingNormatives = null;
+  state.pendingDisposalConfirmation = null;
+  state.pendingWasteImport = null;
+  state.activeDocument = 'appendix';
+  state.files.appendix.status = 'in_progress';
+  state.updatedAt = now;
+
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'appendix',
     refreshAppendixContent: true,
-    refreshSourcesContent: Boolean(options.refreshAllPages),
-    refreshWasteFormationContent: Boolean(options.refreshAllPages),
+    refreshSourcesContent: true,
+    refreshWasteFormationContent: true,
   });
 
-  const nextQuestion = buildNextWasteDetailsQuestion(state);
-  const message = options.refreshAllPages
-      ? `Заполнил редактируемые страницы «Приложение к акту», «Источники образования» и «Образование отходов» данными из загруженного файла: ${state.extractedWasteList.length} отходов.`
-      : `Заполнил редактируемую страницу «Приложение к акту» данными из загруженного файла: ${state.extractedWasteList.length} отходов, колонки 2–3 и группировка по классам опасности.`;
-  
-  console.log('[code112] Appendix filled successfully', { 
-    wastesCount: state.extractedWasteList.length,
-    hasNextQuestion: !!nextQuestion
-  });
-  
+  const message = `Заполнил редактируемые страницы «Приложение к акту», «Источники образования» и «Образование отходов» данными из загруженного файла: ${state.extractedWasteList.length} отходов.`;
+  console.log('[code112] Appendix filled successfully', { wastesCount: state.extractedWasteList.length });
   addAgentMessage(project, message, now);
-  askUser(
-    project,
-    nextQuestion || 'Колонки 2–3 заполнены. Добавьте нормативы, количества и способы обращения или отправьте «Сгенерировать все».',
-    nextQuestion ? documentWorkOptions() : menuOptions(),
-    now
-  );
-  if (!options.explicit && nextQuestion) state.pendingWasteImport = null;
+  askUser(project, 'Колонки 2–10 заполнены. Теперь можно отправить «Сгенерировать все» для финальных DOCX.', menuOptions(), now);
   project.updatedAt = now;
   return project;
 }
@@ -1990,6 +2225,24 @@ function disposalConfirmationOptions() {
     { key: 'no', label: 'Нет' },
     { key: 'manual', label: 'Изменить вручную' },
   ];
+}
+
+function isWasteDataComplete(state) {
+  return (
+    !state.awaitingQuantities &&
+    !state.pendingDisposalConfirmation &&
+    !state.awaitingNormatives &&
+    !state.pendingWasteImport
+  );
+}
+
+function buildWasteDataIncompleteMessage(state) {
+  const parts = [];
+  if (state.awaitingQuantities) parts.push('годовое количество отходов');
+  if (state.pendingDisposalConfirmation) parts.push('подтверждение способа обращения');
+  if (state.awaitingNormatives) parts.push('нормативы образования');
+  if (state.pendingWasteImport) parts.push('заполнение приложения из загруженного файла');
+  return `Прежде чем сгенерировать документы, дозаполните: ${parts.join(', ')}.`;
 }
 
 function isGenerateAnswer(answer) {
