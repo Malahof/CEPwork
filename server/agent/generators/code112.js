@@ -817,7 +817,7 @@ function wasteGenerationRows(data) {
     'кол-во_участков': '1',
     количество_т_шт: '[количество_т_шт]',
     количество: formatAmount(waste),
-    норматив: waste.normative || (waste.code === '9120400' ? '0,054 т / на 1 сотрудника в год' : DASH),
+    норматив: parseNumber(waste.amount) > 0 ? (waste.normative || (waste.code === '9120400' ? '0,054 т / на 1 сотрудника в год' : DASH)) : DASH,
     физ_сост: waste.physicalState || 'не указано',
     состав: waste.composition || DASH,
     'состав_%': waste.compositionPercent || DASH,
@@ -1300,14 +1300,16 @@ function buildQuantityQuestion(state) {
 async function startNormativeCollection(project, state, docsPath, now) {
   console.log('[code112] Starting normative collection');
   state.pendingDisposalConfirmation = null;
-  const firstIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isConfirmedNormative(waste));
-  if (firstIndex === -1) {
+  const queue = state.extractedWasteList
+    .filter((waste) => parseNumber(waste.amount) > 0 && !waste.normativeConfirmed)
+    .map((waste) => waste.code);
+  if (!queue.length) {
     console.log('[code112] No normatives needed (all zero quantities or already filled)');
     return completeExtractedWasteFill(project, state, docsPath, now);
   }
-  const waste = state.extractedWasteList[firstIndex];
-  const needsInput = isFilledTemplateValue(waste.normative);
-  state.awaitingNormatives = { index: firstIndex, needsInput };
+  const waste = state.extractedWasteList.find((w) => w.code === queue[0]);
+  const needsInput = isFilledTemplateValue(waste?.normative);
+  state.awaitingNormatives = { queue, index: 0, needsInput };
   state.updatedAt = now;
   project.updatedAt = now;
   askUser(project, buildNormativeQuestion(state), [], now);
@@ -1320,13 +1322,14 @@ function isConfirmedNormative(waste) {
 
 async function handleNormativeInput(project, state, answer, docsPath, now) {
   console.log('[code112] Handling normative input:', answer);
-  const currentIndex = state.awaitingNormatives?.index ?? 0;
-  const current = state.extractedWasteList[currentIndex];
+  const queue = state.awaitingNormatives?.queue || [];
+  const index = state.awaitingNormatives?.index ?? 0;
+  const currentCode = queue[index];
+  const current = currentCode ? state.extractedWasteList.find((waste) => waste.code === currentCode) : null;
 
   if (!current || parseNumber(current.amount) <= 0) {
-    console.warn('[code112] No current waste for normative input');
-    state.awaitingNormatives = null;
-    return completeExtractedWasteFill(project, state, docsPath, now);
+    console.warn('[code112] No current waste for normative input, advancing');
+    return advanceNormativeCollection(project, state, docsPath, now);
   }
 
   // If we are in confirmation mode (existing normative), handle yes/no first
@@ -1335,6 +1338,7 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
     if (isYesAnswer(normalized)) {
       current.normativeConfirmed = true;
       console.log('[code112] Existing normative confirmed for', current.code);
+      console.log('[code112] Обработан норматив для отхода', current.code, ', переходим к следующему');
       return advanceNormativeCollection(project, state, docsPath, now);
     }
     if (isNoAnswer(normalized)) {
@@ -1384,21 +1388,28 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
     refreshAllPages: true,
   });
   console.log('[code112] Страницы обновлены после ввода нормативов');
+  console.log('[code112] Обработан норматив для отхода', current.code, ', переходим к следующему');
 
   return advanceNormativeCollection(project, state, docsPath, now);
 }
 
 async function advanceNormativeCollection(project, state, docsPath, now) {
-  const nextIndex = state.extractedWasteList.findIndex((waste) => parseNumber(waste.amount) > 0 && !isConfirmedNormative(waste));
-  if (nextIndex === -1) {
+  const queue = state.awaitingNormatives?.queue || [];
+  let i = (state.awaitingNormatives?.index ?? -1) + 1;
+  while (i < queue.length) {
+    const waste = state.extractedWasteList.find((w) => w.code === queue[i]);
+    if (waste && parseNumber(waste.amount) > 0 && !waste.normativeConfirmed) break;
+    i++;
+  }
+  if (i >= queue.length) {
     console.log('[code112] All normatives collected, completing appendix fill');
     state.awaitingNormatives = null;
     return completeExtractedWasteFill(project, state, docsPath, now);
   }
 
-  const waste = state.extractedWasteList[nextIndex];
-  const needsInput = isFilledTemplateValue(waste.normative);
-  state.awaitingNormatives = { index: nextIndex, needsInput };
+  const waste = state.extractedWasteList.find((w) => w.code === queue[i]);
+  const needsInput = isFilledTemplateValue(waste?.normative);
+  state.awaitingNormatives = { queue, index: i, needsInput };
   askUser(project, buildNormativeQuestion(state), [], now);
   project.updatedAt = now;
   return project;
@@ -1438,8 +1449,10 @@ function applyNormativeToWaste(state, code, normative) {
 }
 
 function buildNormativeQuestion(state) {
+  const queue = state.awaitingNormatives?.queue || [];
   const index = state.awaitingNormatives?.index ?? 0;
-  const waste = state.extractedWasteList[index];
+  const code = queue[index];
+  const waste = code ? state.extractedWasteList.find((w) => w.code === code) : null;
   if (!waste) {
     return 'Укажите норматив образования отхода. Пример: 0,0002 т на 1 т сырья.';
   }
@@ -1467,10 +1480,10 @@ async function completeExtractedWasteFill(project, state, docsPath, now) {
     refreshWasteFormationContent: true,
   });
 
-  const message = `Заполнил редактируемые страницы «Приложение к акту», «Источники образования» и «Образование отходов» данными из загруженного файла: ${state.extractedWasteList.length} отходов.`;
+  const message = `Все нормативы внесены. Заполнил редактируемые страницы «Приложение к акту», «Источники образования» и «Образование отходов» данными из загруженного файла: ${state.extractedWasteList.length} отходов.`;
   console.log('[code112] Appendix filled successfully', { wastesCount: state.extractedWasteList.length });
   addAgentMessage(project, message, now);
-  askUser(project, 'Колонки 2–10 заполнены. Теперь можно отправить «Сгенерировать все» для финальных DOCX.', menuOptions(), now);
+  askUser(project, 'Все нормативы внесены. Отправьте «Сгенерировать все» для финальных DOCX.', menuOptions(), now);
   project.updatedAt = now;
   return project;
 }
@@ -2053,7 +2066,7 @@ function buildWasteFormationProjectPageContent(data) {
       '[кол-во_участков]',
       '[количество_т_шт]',
       values.количество || '[количество]',
-      waste.normative || '[норматив]',
+      values.норматив || '[норматив]',
       '[физ_сост]',
       '[состав]',
       '[состав_%]',
