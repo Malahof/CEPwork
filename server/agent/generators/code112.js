@@ -1301,14 +1301,15 @@ async function startNormativeCollection(project, state, docsPath, now) {
   console.log('[code112] Starting normative collection');
   state.pendingDisposalConfirmation = null;
   const queue = state.extractedWasteList
-    .filter((waste) => parseNumber(waste.amount) > 0 && !waste.normativeConfirmed)
-    .map((waste) => waste.code);
+    .filter((waste) => parseNumber(waste.amount) > 0)
+    .map((waste) => waste.code)
+    .sort((a, b) => String(a).localeCompare(String(b), 'ru', { numeric: true }));
   if (!queue.length) {
-    console.log('[code112] No normatives needed (all zero quantities or already filled)');
+    console.log('[code112] No normatives needed (all zero quantities)');
     return completeExtractedWasteFill(project, state, docsPath, now);
   }
   const waste = state.extractedWasteList.find((w) => w.code === queue[0]);
-  const needsInput = isFilledTemplateValue(waste?.normative);
+  const needsInput = !isFilledTemplateValue(waste?.normative);
   state.awaitingNormatives = { queue, index: 0, needsInput };
   state.updatedAt = now;
   project.updatedAt = now;
@@ -1408,7 +1409,7 @@ async function advanceNormativeCollection(project, state, docsPath, now) {
   }
 
   const waste = state.extractedWasteList.find((w) => w.code === queue[i]);
-  const needsInput = isFilledTemplateValue(waste?.normative);
+  const needsInput = !isFilledTemplateValue(waste?.normative);
   state.awaitingNormatives = { queue, index: i, needsInput };
   askUser(project, buildNormativeQuestion(state), [], now);
   project.updatedAt = now;
@@ -1457,7 +1458,7 @@ function buildNormativeQuestion(state) {
     return 'Укажите норматив образования отхода. Пример: 0,0002 т на 1 т сырья.';
   }
   if (state.awaitingNormatives && !state.awaitingNormatives.needsInput && isFilledTemplateValue(waste.normative)) {
-    return `Для отхода ${waste.code} (${waste.name}) норматив уже установлен: ${waste.normative}. Подтвердить? Да / Нет`;
+    return `Для отхода ${waste.code} (${waste.name}) указан норматив: ${waste.normative}. Оставить? Да / Нет`;
   }
   return `Для отхода ${waste.code} (${waste.name}) укажите норматив образования. Пример: 0,0002 т на 1 т сырья.`;
 }
