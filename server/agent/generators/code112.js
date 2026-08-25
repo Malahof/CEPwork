@@ -231,6 +231,10 @@ export async function generate(projectData, userSources = {}) {
     return handleNormativeInput(projectData, state, answer, docsPath, now);
   }
 
+  if (state.pendingAppendixEdit) {
+    return handleAppendixEdit(projectData, state, answer, docsPath, now);
+  }
+
   if (state.pendingWasteImport) {
     const normalized = normalizeAnswer(answer);
     if (isGenerateAnswer(answer)) {
@@ -277,6 +281,13 @@ export async function generate(projectData, userSources = {}) {
     state.activeDocument = selectedDocument.key;
     state.files[selectedDocument.key].status = 'in_progress';
     projectData.updatedAt = now;
+    if (selectedDocument.key === 'appendix' && hasAppendixData(state)) {
+      state.pendingAppendixEdit = { stage: 'confirm' };
+      state.activeDocument = null;
+      askUser(projectData, 'Для этого документа уже введены данные. Хотите что-то изменить?', confirmationOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
     if (selectedDocument.key === 'appendix' && state.extractedWasteList.length) {
       state.pendingWasteImport = {
         count: state.extractedWasteList.length,
@@ -353,6 +364,7 @@ export function getCode112Question(project) {
   const state = project.extractedData?.code112;
   if (!state) return null;
   if (state.awaitingOrganizationName) return organizationNameQuestion();
+  if (state.pendingAppendixEdit) return buildAppendixEditQuestion(state);
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.pendingDisposalConfirmation) return 'Подтвердите способ обращения с отходом.';
   if (state.awaitingQuantities) return buildQuantityQuestion(state);
@@ -366,10 +378,13 @@ export function getCode112Options(project) {
   if (!state) return [];
   if (state.pendingWasteExtraction) return wasteExtractionModeOptions();
   if (state.memory?.pendingOrganization) return confirmationOptions();
+  if (state.pendingAppendixEdit) return appendixEditOptions(state);
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingDisposalConfirmation) return disposalConfirmationOptions();
   if (state.awaitingQuantities) return [];
-  if (state.awaitingNormatives) return [];
+  if (state.awaitingNormatives) {
+    return state.awaitingNormatives.needsInput ? [] : confirmationOptions();
+  }
   if (state.awaitingOrganizationName) return [];
   if (state.activeDocument) return documentWorkOptions();
   return menuOptions();
@@ -507,6 +522,11 @@ async function askNextDisposalConfirmation(project, state, docsPath, now) {
   const index = state.extractedWasteList.findIndex((waste) => shouldConfirmDisposal(waste));
   if (index === -1) {
     state.pendingDisposalConfirmation = null;
+    if (state.afterDisposalEdit) {
+      state.afterDisposalEdit = false;
+      console.log('[code112] All disposal methods confirmed during edit, syncing pages');
+      return completeAppendixEditSync(project, state, docsPath, now);
+    }
     state.pendingWasteImport = null;
     console.log('[code112] All disposal methods confirmed, starting normative collection');
     return startNormativeCollection(project, state, docsPath, now);
@@ -840,7 +860,8 @@ function appendixWasteVariables(waste) {
     кол_хранение: DASH,
     кол_захоронение: DASH,
   };
-  const key = handlingToAppendixKey(waste.handling);
+  const activeHandling = parseNumber(waste.amount) > 0 ? (waste.handling || waste.suggestedHandling) : '';
+  const key = handlingToAppendixKey(activeHandling);
   if (key) values[key] = values.количество;
   return values;
 }
@@ -944,6 +965,8 @@ function ensureGeneratorState(project, now) {
       awaitingOrganizationName: false,
       pendingWasteExtraction: null,
       pendingWasteImport: null,
+      pendingAppendixEdit: null,
+      afterDisposalEdit: false,
       pendingDisposalConfirmation: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
@@ -1006,6 +1029,8 @@ function ensureGeneratorState(project, now) {
   project.extractedData.code112.awaitingOrganizationName = Boolean(project.extractedData.code112.awaitingOrganizationName);
   project.extractedData.code112.pendingWasteExtraction = project.extractedData.code112.pendingWasteExtraction ?? null;
   project.extractedData.code112.pendingWasteImport = project.extractedData.code112.pendingWasteImport ?? null;
+  project.extractedData.code112.pendingAppendixEdit = project.extractedData.code112.pendingAppendixEdit ?? null;
+  project.extractedData.code112.afterDisposalEdit = project.extractedData.code112.afterDisposalEdit ?? false;
   project.extractedData.code112.pendingDisposalConfirmation = project.extractedData.code112.pendingDisposalConfirmation ?? null;
   project.extractedData.code112.awaitingWasteDetails = project.extractedData.code112.awaitingWasteDetails ?? null;
   project.extractedData.code112.awaitingQuantities = project.extractedData.code112.awaitingQuantities ?? null;
@@ -1598,6 +1623,122 @@ async function handleWasteListEdit(project, state, answer, docsPath, now) {
   askUser(project, buildWasteEditQuestion(state), [], now);
   project.updatedAt = now;
   return project;
+}
+
+function hasAppendixData(state) {
+  return state.extractedWasteList.some((waste) => parseNumber(waste.amount) > 0);
+}
+
+function buildAppendixEditQuestion(state) {
+  const stage = state.pendingAppendixEdit?.stage;
+  if (stage === 'select') {
+    return 'Что хотите изменить?';
+  }
+  return 'Для этого документа уже введены данные. Хотите что-то изменить?';
+}
+
+function appendixEditOptions(state) {
+  if (state.pendingAppendixEdit?.stage === 'select') {
+    return [
+      { key: 'wasteList', label: 'Список отходов' },
+      { key: 'quantities', label: 'Годовые количества' },
+      { key: 'normatives', label: 'Нормативы' },
+      { key: 'handling', label: 'Способы обращения' },
+      { key: 'cancel', label: 'Отмена' },
+    ];
+  }
+  return confirmationOptions();
+}
+
+async function completeAppendixEditSync(project, state, docsPath, now) {
+  state.pendingAppendixEdit = null;
+  state.activeDocument = null;
+  state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'appendix',
+    refreshAllPages: true,
+  });
+  askUser(project, 'Изменения сохранены. К чему теперь приступить?', menuOptions(), now);
+  project.updatedAt = now;
+  return project;
+}
+
+async function handleAppendixEdit(project, state, answer, docsPath, now) {
+  const stage = state.pendingAppendixEdit?.stage;
+  if (stage === 'confirm') {
+    const normalized = normalizeAnswer(answer);
+    if (isYesAnswer(normalized)) {
+      state.pendingAppendixEdit = { stage: 'select' };
+      askUser(project, buildAppendixEditQuestion(state), appendixEditOptions(state), now);
+      project.updatedAt = now;
+      return project;
+    }
+    if (isNoAnswer(normalized)) {
+      return completeAppendixEditSync(project, state, docsPath, now);
+    }
+    askUser(project, buildAppendixEditQuestion(state), confirmationOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  const option = appendixEditOptions(state).find((o) => normalizeAnswer(answer) === o.key || normalizeAnswer(answer) === normalizeAnswer(o.label));
+  if (!option || option.key === 'cancel') {
+    return completeAppendixEditSync(project, state, docsPath, now);
+  }
+
+  state.pendingAppendixEdit = null;
+
+  if (option.key === 'wasteList') {
+    state.pendingWasteImport = { stage: 'edit' };
+    askUser(project, buildWasteEditQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (option.key === 'quantities') {
+    for (const waste of state.extractedWasteList) {
+      waste.amount = '';
+      waste.unit = 'т';
+      waste.amountKg = 0;
+      waste.normativeConfirmed = false;
+    }
+    for (const waste of state.wastes) {
+      waste.amount = '';
+      waste.unit = 'т';
+      waste.amountKg = 0;
+      waste.normativeConfirmed = false;
+    }
+    state.awaitingQuantities = { index: 0 };
+    state.quantityInputMode = 'single';
+    askUser(project, buildQuantityQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (option.key === 'normatives') {
+    for (const waste of state.extractedWasteList) {
+      waste.normativeConfirmed = false;
+    }
+    for (const waste of state.wastes) {
+      waste.normativeConfirmed = false;
+    }
+    return startNormativeCollection(project, state, docsPath, now);
+  }
+
+  if (option.key === 'handling') {
+    for (const waste of state.extractedWasteList) {
+      waste.handling = '';
+      waste.handlingConfirmed = false;
+    }
+    for (const waste of state.wastes) {
+      waste.handling = '';
+      waste.handlingConfirmed = false;
+    }
+    state.afterDisposalEdit = true;
+    return askNextDisposalConfirmation(project, state, docsPath, now);
+  }
+
+  return completeAppendixEditSync(project, state, docsPath, now);
 }
 
 function shouldConfirmDisposal(waste) {
