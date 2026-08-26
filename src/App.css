@@ -615,6 +615,12 @@
   justify-content: center;
   width: 100%;
   min-height: 36px;
+  color: #0a2a66;
+  font-weight: bold;
+}
+
+.chat-option:hover {
+  color: #003399;
 }
 
 .chat-finished {

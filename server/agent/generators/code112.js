@@ -209,6 +209,23 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
+  if (state.pendingSourcesExtraction) {
+    const normalized = normalizeAnswer(answer);
+    if (normalized === 'cancel' || isNoAnswer(normalized)) {
+      state.pendingSourcesExtraction = null;
+      state.activeDocument = 'sources';
+      askUser(projectData, 'Загрузка отменена. К чему теперь приступить?', documentWorkOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    if (normalized === 'all' || isYesAnswer(normalized)) {
+      return processPendingSourcesExtraction(projectData, state, 'all', now, userSources);
+    }
+    askUser(projectData, 'Выберите, какие данные извлечь из загруженного файла.', sourcesExtractionModeOptions(), now);
+    projectData.updatedAt = now;
+    return projectData;
+  }
+
   if (state.pendingWasteExtraction) {
     const mode = normalizeWasteExtractionMode(answer);
     if (!mode) {
@@ -229,6 +246,10 @@ export async function generate(projectData, userSources = {}) {
 
   if (state.awaitingNormatives) {
     return handleNormativeInput(projectData, state, answer, docsPath, now);
+  }
+
+  if (state.pendingSourcesEdit) {
+    return handleSourcesEdit(projectData, state, answer, docsPath, now);
   }
 
   if (state.pendingAppendixEdit) {
@@ -283,6 +304,13 @@ export async function generate(projectData, userSources = {}) {
     projectData.updatedAt = now;
     if (selectedDocument.key === 'appendix' && hasAppendixData(state)) {
       state.pendingAppendixEdit = { stage: 'confirm' };
+      state.activeDocument = null;
+      askUser(projectData, 'Для этого документа уже введены данные. Хотите что-то изменить?', confirmationOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    if (selectedDocument.key === 'sources' && hasSourcesData(state)) {
+      state.pendingSourcesEdit = { stage: 'confirm' };
       state.activeDocument = null;
       askUser(projectData, 'Для этого документа уже введены данные. Хотите что-то изменить?', confirmationOptions(), now);
       projectData.updatedAt = now;
@@ -365,6 +393,8 @@ export function getCode112Question(project) {
   if (!state) return null;
   if (state.awaitingOrganizationName) return organizationNameQuestion();
   if (state.pendingAppendixEdit) return buildAppendixEditQuestion(state);
+  if (state.pendingSourcesEdit) return 'Для этого документа уже введены данные. Хотите что-то изменить?';
+  if (state.pendingSourcesExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
@@ -383,6 +413,8 @@ export function getCode112Options(project) {
   if (state.pendingWasteExtraction) return wasteExtractionModeOptions();
   if (state.memory?.pendingOrganization) return confirmationOptions();
   if (state.pendingAppendixEdit) return appendixEditOptions(state);
+  if (state.pendingSourcesEdit) return confirmationOptions();
+  if (state.pendingSourcesExtraction) return sourcesExtractionModeOptions();
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
@@ -403,8 +435,28 @@ export async function registerCode112Upload(project, upload, options = {}) {
   const now = options.now ?? Date.now();
   const state = ensureGeneratorState(project, now);
   const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
+  const uploadIndex = Math.max(0, uploads.length - 1);
+
+  if (state.activeDocument === 'sources' || upload.fileName?.toLowerCase().includes('источник')) {
+    state.pendingSourcesExtraction = {
+      uploadIndex,
+      fileName: upload.fileName,
+      text: upload.text ?? '',
+      createdAt: now,
+    };
+    state.updatedAt = now;
+    project.updatedAt = now;
+    addAgentMessage(
+      project,
+      `Файл «${upload.fileName}» готов к разбору. Какие данные для Источников образования извлечь?`,
+      now
+    );
+    askUser(project, 'Выберите режим извлечения данных из файла.', sourcesExtractionModeOptions(), now);
+    return state.pendingSourcesExtraction;
+  }
+
   state.pendingWasteExtraction = {
-    uploadIndex: Math.max(0, uploads.length - 1),
+    uploadIndex,
     fileName: upload.fileName,
     text: upload.text ?? '',
     createdAt: now,
@@ -418,6 +470,21 @@ export async function registerCode112Upload(project, upload, options = {}) {
   );
   askUser(project, 'Выберите режим извлечения данных из файла.', wasteExtractionModeOptions(), now);
   return state.pendingWasteExtraction;
+}
+
+function sourcesExtractionModeOptions() {
+  return [
+    { key: 'all', label: 'Извлечь все данные для Источников образования' },
+    { key: 'cancel', label: 'Отмена' },
+  ];
+}
+
+function normalizeSourcesExtractionMode(answer) {
+  const normalized = normalizeAnswer(answer);
+  if (normalized.includes('все')) return 'all';
+  if (isYesAnswer(normalized)) return 'all';
+  if (normalized === 'cancel' || isNoAnswer(normalized)) return 'cancel';
+  return null;
 }
 
 async function processPendingWasteExtraction(project, state, mode, now, userSources = {}) {
@@ -493,6 +560,90 @@ async function processPendingWasteExtraction(project, state, mode, now, userSour
 
   askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
   return project;
+}
+
+async function processPendingSourcesExtraction(project, state, mode, now, userSources = {}) {
+  console.log('[code112] Processing sources extraction', { mode, uploadIndex: state.pendingSourcesExtraction?.uploadIndex });
+
+  const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
+  const upload = uploads[state.pendingSourcesExtraction?.uploadIndex] ?? uploads.at(-1) ?? state.pendingSourcesExtraction;
+  if (!upload) {
+    console.warn('[code112] Upload not found for sources extraction');
+    state.pendingSourcesExtraction = null;
+    askUser(project, 'Файл для Источников образования не найден. Загрузите файл снова.', documentWorkOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  const extracted = extractSourcesFromFile(upload.text ?? '');
+  console.log('[code112] Extracted sources from file:', { fileName: upload.fileName, count: extracted.length });
+
+  if (!extracted.length) {
+    console.warn('[code112] No source rows found in uploaded file');
+    state.pendingSourcesExtraction = null;
+    askUser(project, `В файле «${upload.fileName}» не нашёл таблицу Источников образования. Проверьте формат и загрузите снова.`, documentWorkOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  state.sources = extracted.sort((a, b) => String(a.sourceNumber).localeCompare(String(b.sourceNumber), 'ru', { numeric: true }));
+  state.pendingSourcesExtraction = null;
+  state.activeDocument = 'sources';
+  state.files.sources.status = 'in_progress';
+  state.updatedAt = now;
+  project.updatedAt = now;
+
+  const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
+  console.log('[code112] Updating project sources page after extraction');
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'sources',
+    refreshSourcesContent: true,
+  });
+  console.log('[code112] Sources page updated after extraction');
+
+  addAgentMessage(project, `Извлечено ${extracted.length} строк Источников образования.`, now);
+  askUser(project, `Данные для файла «Источники образования отходов» сохранены. К чему теперь приступить?`, menuOptions(), now);
+  return project;
+}
+
+function extractSourcesFromFile(text) {
+  const rows = [];
+  const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    if (/^\s*#/.test(line)) continue;
+    if (/номер.*источник|источник.*номер/i.test(line)) continue;
+
+    let parts;
+    if (line.includes('\t') || line.includes(';') || line.includes('|')) {
+      parts = line.split(/[\t;|]/).map((part) => part.trim()).filter(Boolean);
+    } else {
+      parts = line.split(/\s{2,}/).map((part) => part.trim()).filter(Boolean);
+    }
+
+    if (parts.length < 5) continue;
+
+    const sourceNumber = parts[0].replace(/\D/g, '');
+    const sourceName = parts[1];
+    const site = parts[2];
+    const codeMatch = parts[3].match(/\d{7}/);
+    if (!codeMatch) continue;
+    const code = codeMatch[0];
+    const wasteName = parts[4];
+    const quantity = parts[5] ?? '';
+    const normalizedQuantity = /[-–—\-]+/.test(quantity) || quantity.toLowerCase().includes('--') ? '−' : quantity;
+
+    rows.push({
+      sourceNumber: sourceNumber || String(rows.length + 1),
+      sourceName: sourceName || '—',
+      site: site || '—',
+      code,
+      wasteName: wasteName || '—',
+      quantity: normalizedQuantity || '−',
+    });
+  }
+
+  return rows;
 }
 
 async function resolveWasteDisposalMethods(wastes, options = {}) {
@@ -848,13 +999,14 @@ function titleCommissionRows(data) {
 }
 
 function sourceRows(data) {
-  return data.wastes.map((waste, index) => ({
-    номер_источника: String(index + 1),
-    источник: waste.source || 'Источник не указан',
-    участок: waste.source || 'Участок не указан',
-    код: waste.code,
-    отход: waste.name,
-    количество_кг_шт: '[количество_кг_шт]',
+  const sources = Array.isArray(data.sources) && data.sources.length ? data.sources : data.wastes;
+  return sources.map((source, index) => ({
+    номер_источника: source.sourceNumber ?? String(index + 1),
+    источник: source.sourceName ?? source.источник ?? source.source ?? 'Источник не указан',
+    участок: source.site ?? source.участок ?? 'Участок не указан',
+    код: source.code,
+    отход: source.wasteName ?? source.отход ?? source.name ?? 'Отход не указан',
+    количество_кг_шт: source.quantity ?? source.количество_кг_шт ?? '[количество_кг_шт]',
   }));
 }
 
@@ -995,9 +1147,11 @@ function ensureGeneratorState(project, now) {
       pendingWasteExtraction: null,
       pendingWasteImport: null,
       pendingAppendixEdit: null,
+      pendingSourcesEdit: null,
       afterDisposalEdit: false,
       completingAfterDisposal: false,
       pendingDisposalConfirmation: null,
+      pendingSourcesExtraction: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -1005,6 +1159,7 @@ function ensureGeneratorState(project, now) {
       data: {},
       wastes: [],
       extractedWasteList: [],
+      sources: [],
       memory: {
         dateFormat: DEFAULT_DATE_FORMAT,
         pendingOrganization: null,
@@ -1063,10 +1218,13 @@ function ensureGeneratorState(project, now) {
   project.extractedData.code112.afterDisposalEdit = project.extractedData.code112.afterDisposalEdit ?? false;
   project.extractedData.code112.completingAfterDisposal = project.extractedData.code112.completingAfterDisposal ?? false;
   project.extractedData.code112.pendingDisposalConfirmation = project.extractedData.code112.pendingDisposalConfirmation ?? null;
+  project.extractedData.code112.pendingSourcesExtraction = project.extractedData.code112.pendingSourcesExtraction ?? null;
+  project.extractedData.code112.pendingSourcesEdit = project.extractedData.code112.pendingSourcesEdit ?? null;
   project.extractedData.code112.awaitingWasteDetails = project.extractedData.code112.awaitingWasteDetails ?? null;
   project.extractedData.code112.awaitingQuantities = project.extractedData.code112.awaitingQuantities ?? null;
   project.extractedData.code112.awaitingNormatives = project.extractedData.code112.awaitingNormatives ?? null;
   project.extractedData.code112.quantityInputMode = project.extractedData.code112.quantityInputMode ?? null;
+  project.extractedData.code112.sources = Array.isArray(project.extractedData.code112.sources) ? project.extractedData.code112.sources : [];
   project.extractedData.code112.extractedWasteList = Array.isArray(project.extractedData.code112.extractedWasteList)
     ? project.extractedData.code112.extractedWasteList.map(normalizeWasteRow).filter((waste) => waste.code)
     : [];
@@ -1794,6 +1952,10 @@ function hasAppendixData(state) {
   return state.extractedWasteList.some((waste) => parseNumber(waste.amount) > 0);
 }
 
+function hasSourcesData(state) {
+  return Array.isArray(state.sources) && state.sources.length > 0;
+}
+
 function buildAppendixEditQuestion(state) {
   const stage = state.pendingAppendixEdit?.stage;
   if (stage === 'select') {
@@ -1904,6 +2066,29 @@ async function handleAppendixEdit(project, state, answer, docsPath, now) {
   }
 
   return completeAppendixEditSync(project, state, docsPath, now);
+}
+
+async function handleSourcesEdit(project, state, answer, docsPath, now) {
+  const normalized = normalizeAnswer(answer);
+  if (isYesAnswer(normalized)) {
+    state.pendingSourcesEdit = null;
+    state.activeDocument = 'sources';
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true });
+    askUser(project, buildDocumentQuestion(documentByKey.get('sources'), state), documentWorkOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+  if (isNoAnswer(normalized)) {
+    state.pendingSourcesEdit = null;
+    state.activeDocument = null;
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true });
+    askUser(project, 'Текущие данные Источников образования сохранены. К чему теперь приступить?', menuOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+  askUser(project, 'Для этого документа уже введены данные. Хотите что-то изменить?', confirmationOptions(), now);
+  project.updatedAt = now;
+  return project;
 }
 
 function shouldConfirmDisposal(waste) {
@@ -2335,17 +2520,16 @@ ${groupBlocks || 'Отходы пока не добавлены. Загрузи�
 }
 
 function buildSourcesProjectPageContent(data) {
-  console.log('[code112] Building sources page content with', data.wastes.length, 'wastes');
-  const wastes = [...data.wastes].sort(compareWasteCodes);
-  const rows = wastes.map((waste, index) => {
-    const values = sourceRows({ wastes: [waste] })[0];
+  const sources = Array.isArray(data.sources) && data.sources.length ? data.sources : data.wastes;
+  console.log('[code112] Building sources page content with', sources.length, 'rows');
+  const rows = sourceRows(data).map((values, index) => {
     return `| ${[
       values.номер_источника || String(index + 1),
-      '[источник]',
-      '[участок]',
-      waste.code,
-      waste.name,
-      '[количество_кг_шт]',
+      values.источник || '—',
+      values.участок || '—',
+      values.код || '—',
+      values.отход || '—',
+      values.количество_кг_шт || '—',
     ].map(escapeMarkdownTableCell).join(' | ')} |`;
   });
   console.log('[code112] Sources page content built with', rows.length, 'rows');
@@ -2703,6 +2887,7 @@ function buildTemplateData(project, state) {
     chairName: commissionData.chairName,
     commission: commissionData.members,
     wastes: state.wastes.length ? state.wastes : defaultWastes(),
+    sources: Array.isArray(state.sources) ? state.sources : [],
     savedInstructions: state.memory?.savedInstructions ?? [],
     geminiSystemPrompt: state.memory?.geminiSystemPrompt ?? '',
   };
