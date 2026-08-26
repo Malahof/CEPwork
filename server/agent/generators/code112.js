@@ -1222,20 +1222,92 @@ function startQuantityCollection(project, state, docsPath, now) {
   return project;
 }
 
+function startsWithNumber(value) {
+  return /^\d/.test(String(value).trim());
+}
+
+function hasNormativeMarker(value) {
+  const normalized = ` ${normalizeAnswer(value)} `;
+  return normalized.includes(' на ') || normalized.includes(' в год ');
+}
+
+function validateQuantityText(value) {
+  const text = String(value).trim();
+  if (!text) return { valid: false, message: 'Введите значение.' };
+  if (hasNormativeMarker(text)) {
+    return {
+      valid: false,
+      message: 'Похоже, вы ввели норматив образования, а не годовое количество. Пожалуйста, введите годовое количество в виде числа (например, 10 т или 4,8).',
+    };
+  }
+  if (!startsWithNumber(text)) {
+    return {
+      valid: false,
+      message: 'Введите годовое количество числом, возможно с единицей (например, 10 т или 150 шт.).',
+    };
+  }
+  return { valid: true };
+}
+
+function validateNormativeText(value) {
+  const text = String(value).trim();
+  if (!text) return { valid: false, message: 'Введите значение.' };
+  if (!startsWithNumber(text)) {
+    return {
+      valid: false,
+      message: 'Норматив должен начинаться с числа (например, 0,0002 т на 1 т сырья).',
+    };
+  }
+  if (!hasNormativeMarker(text)) {
+    return {
+      valid: false,
+      message: 'Похоже, вы ввели годовое количество, а не норматив образования. Пожалуйста, введите норматив в формате: число единица на ... (например, 0,0002 т на 1 т сырья).',
+    };
+  }
+  return { valid: true };
+}
+
 async function handleQuantityInput(project, state, answer, docsPath, now) {
   console.log('[code112] Handling quantity input:', answer);
   const list = parseQuantityList(answer);
   let applied = 0;
+  const invalidMessages = [];
 
   if (list.length) {
     resetAllQuantities(state);
     for (const { code, amount } of list) {
+      const validation = validateQuantityText(amount);
+      if (!validation.valid) {
+        console.warn('[code112] Invalid quantity for', code, ':', amount, validation.message);
+        invalidMessages.push(`${code}: ${validation.message}`);
+        continue;
+      }
       if (applyQuantityToWaste(state, code, amount)) {
         applied++;
+      } else {
+        invalidMessages.push(`${code}: не удалось применить значение '${amount}'`);
       }
     }
     console.log('[code112] Applied quantities from list:', applied, 'of', list.length);
+  } else if (/[;\n]/.test(String(answer).trim()) && !String(answer).includes(':') && !String(answer).includes('=')) {
+    console.warn('[code112] Quantity list without code:value separators:', answer);
+    addAgentMessage(
+      project,
+      'Похоже, вы ввели несколько значений, но без кодов отходов. Пожалуйста, используйте формат: 1110406: 10; 5350202: 4,8.',
+      now
+    );
+    askUser(project, buildQuantityQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
   } else {
+    const validation = validateQuantityText(answer);
+    if (!validation.valid) {
+      console.warn('[code112] Invalid quantity input:', answer, validation.message);
+      addAgentMessage(project, validation.message, now);
+      askUser(project, buildQuantityQuestion(state), [], now);
+      project.updatedAt = now;
+      return project;
+    }
     const currentIndex = state.awaitingQuantities?.index ?? 0;
     const current = state.extractedWasteList[currentIndex];
     if (current && applyQuantityToWaste(state, current.code, answer)) {
@@ -1243,13 +1315,11 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
       console.log('[code112] Applied quantity for', current.code);
     } else {
       console.warn('[code112] Could not parse quantity from:', answer);
+      addAgentMessage(project, 'Не удалось распознать годовое количество. Попробуйте, например, 10 т или 150 шт.', now);
+      askUser(project, buildQuantityQuestion(state), [], now);
+      project.updatedAt = now;
+      return project;
     }
-  }
-
-  if (!applied) {
-    askUser(project, buildQuantityQuestion(state), [], now);
-    project.updatedAt = now;
-    return project;
   }
 
   // Update wastes and pages so the preview reflects entered quantities
@@ -1261,6 +1331,18 @@ async function handleQuantityInput(project, state, answer, docsPath, now) {
   const updatedCodes = state.extractedWasteList.filter((w) => isFilledTemplateValue(w.amount)).map((w) => w.code);
   console.log('[code112] Обновлены годовые количества для отходов:', updatedCodes.length);
   console.log('[code112] Страницы обновлены после ввода количеств');
+
+  // Do not advance if any list entries were invalid
+  if (invalidMessages.length) {
+    addAgentMessage(
+      project,
+      `Обработаны только корректные значения. Проверьте ошибки в списке:\n${invalidMessages.join('\n')}`,
+      now
+    );
+    askUser(project, buildQuantityQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
 
   // If a list was entered, treat it as the definitive set and move to normatives
   if (list.length) {
@@ -1410,15 +1492,42 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
   }
 
   let applied = 0;
+  const invalidMessages = [];
   const list = parseNormativeList(answer);
   if (list.length) {
     for (const { code, normative } of list) {
+      const validation = validateNormativeText(normative);
+      if (!validation.valid) {
+        console.warn('[code112] Invalid normative for', code, ':', normative, validation.message);
+        invalidMessages.push(`${code}: ${validation.message}`);
+        continue;
+      }
       if (applyNormativeToWaste(state, code, normative)) {
         applied++;
+      } else {
+        invalidMessages.push(`${code}: не удалось применить норматив '${normative}'`);
       }
     }
     console.log('[code112] Applied normatives from list:', applied, 'of', list.length);
+  } else if (/[;\n]/.test(String(answer).trim()) && !String(answer).includes(':') && !String(answer).includes('=')) {
+    console.warn('[code112] Normative list without code:value separators:', answer);
+    addAgentMessage(
+      project,
+      'Похоже, вы ввели несколько нормативов, но без кодов отходов. Пожалуйста, используйте формат: 1110406: 0,1 т на 1 т; 5350202: 0,0002 т на 1 т.',
+      now
+    );
+    askUser(project, buildNormativeQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
   } else if (isFilledTemplateValue(answer)) {
+    const validation = validateNormativeText(answer);
+    if (!validation.valid) {
+      console.warn('[code112] Invalid normative input:', answer, validation.message);
+      addAgentMessage(project, validation.message, now);
+      askUser(project, buildNormativeQuestion(state), [], now);
+      project.updatedAt = now;
+      return project;
+    }
     current.normative = answer.trim();
     current.normativeConfirmed = true;
     const stateWaste = state.wastes.find((waste) => waste.code === current.code && normalizeAnswer(waste.name) === normalizeAnswer(current.name));
@@ -1430,6 +1539,10 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
     console.log('[code112] Applied normative for', current.code);
   } else {
     console.warn('[code112] Could not parse normative from:', answer);
+    addAgentMessage(project, 'Не удалось распознать норматив. Введите значение, например 0,1 т на 1 т продукции.', now);
+    askUser(project, buildNormativeQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
   }
 
   if (!applied) {
@@ -1445,6 +1558,19 @@ async function handleNormativeInput(project, state, answer, docsPath, now) {
     refreshAllPages: true,
   });
   console.log('[code112] Страницы обновлены после ввода нормативов');
+
+  // Do not advance if any list entries were invalid
+  if (invalidMessages.length) {
+    addAgentMessage(
+      project,
+      `Обработаны только корректные нормативы. Проверьте ошибки в списке:\n${invalidMessages.join('\n')}`,
+      now
+    );
+    askUser(project, buildNormativeQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
   console.log('[code112] Обработан норматив для отхода', current.code, ', переходим к следующему');
 
   return advanceNormativeCollection(project, state, docsPath, now);
