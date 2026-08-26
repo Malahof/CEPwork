@@ -366,7 +366,11 @@ export function getCode112Question(project) {
   if (state.awaitingOrganizationName) return organizationNameQuestion();
   if (state.pendingAppendixEdit) return buildAppendixEditQuestion(state);
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
-  if (state.pendingDisposalConfirmation) return 'Подтвердите способ обращения с отходом.';
+  if (state.pendingDisposalConfirmation) {
+    const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
+    if (pendingWaste) return buildDisposalConfirmationQuestion(pendingWaste);
+    return 'Подтвердите способ обращения с отходом.';
+  }
   if (state.awaitingQuantities) return buildQuantityQuestion(state);
   if (state.awaitingNormatives) return buildNormativeQuestion(state);
   if (state.activeDocument) return `Цэпик работает над файлом: ${documentByKey.get(state.activeDocument)?.label ?? state.activeDocument}`;
@@ -380,7 +384,10 @@ export function getCode112Options(project) {
   if (state.memory?.pendingOrganization) return confirmationOptions();
   if (state.pendingAppendixEdit) return appendixEditOptions(state);
   if (state.pendingWasteImport) return confirmationOptions();
-  if (state.pendingDisposalConfirmation) return disposalConfirmationOptions();
+  if (state.pendingDisposalConfirmation) {
+    const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
+    return disposalConfirmationOptions(pendingWaste);
+  }
   if (state.awaitingQuantities) return [];
   if (state.awaitingNormatives) {
     return state.awaitingNormatives.needsInput ? [] : confirmationOptions();
@@ -527,13 +534,19 @@ async function askNextDisposalConfirmation(project, state, docsPath, now) {
       console.log('[code112] All disposal methods confirmed during edit, syncing pages');
       return completeAppendixEditSync(project, state, docsPath, now);
     }
+    if (state.completingAfterDisposal) {
+      state.completingAfterDisposal = false;
+      console.log('[code112] All disposal methods confirmed after normatives, finalizing');
+      return completeExtractedWasteFill(project, state, docsPath, now);
+    }
     state.pendingWasteImport = null;
     console.log('[code112] All disposal methods confirmed, starting normative collection');
     return startNormativeCollection(project, state, docsPath, now);
   }
 
-  state.pendingDisposalConfirmation = { wasteKey: wasteKey(state.extractedWasteList[index]), createdAt: now };
-  askUser(project, buildDisposalConfirmationQuestion(state.extractedWasteList[index]), disposalConfirmationOptions(), now);
+  const waste = state.extractedWasteList[index];
+  state.pendingDisposalConfirmation = { wasteKey: wasteKey(waste), createdAt: now };
+  askUser(project, buildDisposalConfirmationQuestion(waste), disposalConfirmationOptions(waste), now);
   project.updatedAt = now;
   return project;
 }
@@ -550,7 +563,9 @@ async function handleDisposalConfirmation(project, state, answer, docsPath, now)
 
   const normalized = normalizeAnswer(answer);
   const waste = state.extractedWasteList[index];
-  const manualHandling = parseHandlingAnswer(answer);
+  const disposalOptionMap = { sorting: 'сортировка', reuse: 'использование', burial: 'захоронение' };
+  const resolvedAnswer = disposalOptionMap[answer] ?? answer;
+  const manualHandling = parseHandlingAnswer(resolvedAnswer);
   if (isYesAnswer(normalized) && waste.suggestedHandling) {
     state.extractedWasteList[index] = { ...waste, handling: waste.suggestedHandling, handlingConfirmed: true };
   } else if (isNoAnswer(normalized)) {
@@ -564,10 +579,24 @@ async function handleDisposalConfirmation(project, state, answer, docsPath, now)
       handlingSource: 'manual',
     };
   } else {
-    askUser(project, buildDisposalConfirmationQuestion(waste), disposalConfirmationOptions(), now);
+    askUser(project, buildDisposalConfirmationQuestion(waste), disposalConfirmationOptions(waste), now);
     project.updatedAt = now;
     return project;
   }
+
+  // Keep state.wastes in sync so appendix columns 5–10 reflect the confirmed method
+  const stateWasteIndex = state.wastes.findIndex((w) => wasteKey(w) === pendingKey);
+  if (stateWasteIndex !== -1) {
+    state.wastes[stateWasteIndex] = { ...state.wastes[stateWasteIndex], ...state.extractedWasteList[index] };
+  }
+  state.wastes = mergeWastes(state.wastes, state.extractedWasteList).sort(compareWasteCodes);
+
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'appendix',
+    refreshAppendixContent: true,
+    refreshSourcesContent: true,
+    refreshWasteFormationContent: true,
+  });
 
   state.pendingDisposalConfirmation = null;
   project.updatedAt = now;
@@ -967,6 +996,7 @@ function ensureGeneratorState(project, now) {
       pendingWasteImport: null,
       pendingAppendixEdit: null,
       afterDisposalEdit: false,
+      completingAfterDisposal: false,
       pendingDisposalConfirmation: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
@@ -1031,6 +1061,7 @@ function ensureGeneratorState(project, now) {
   project.extractedData.code112.pendingWasteImport = project.extractedData.code112.pendingWasteImport ?? null;
   project.extractedData.code112.pendingAppendixEdit = project.extractedData.code112.pendingAppendixEdit ?? null;
   project.extractedData.code112.afterDisposalEdit = project.extractedData.code112.afterDisposalEdit ?? false;
+  project.extractedData.code112.completingAfterDisposal = project.extractedData.code112.completingAfterDisposal ?? false;
   project.extractedData.code112.pendingDisposalConfirmation = project.extractedData.code112.pendingDisposalConfirmation ?? null;
   project.extractedData.code112.awaitingWasteDetails = project.extractedData.code112.awaitingWasteDetails ?? null;
   project.extractedData.code112.awaitingQuantities = project.extractedData.code112.awaitingQuantities ?? null;
@@ -1495,9 +1526,17 @@ async function completeExtractedWasteFill(project, state, docsPath, now) {
   state.awaitingNormatives = null;
   state.pendingDisposalConfirmation = null;
   state.pendingWasteImport = null;
+  state.completingAfterDisposal = false;
   state.activeDocument = 'appendix';
   state.files.appendix.status = 'in_progress';
   state.updatedAt = now;
+
+  const pendingDisposalIndex = state.extractedWasteList.findIndex((waste) => shouldConfirmDisposal(waste));
+  if (pendingDisposalIndex !== -1) {
+    state.completingAfterDisposal = true;
+    console.log('[code112] Pending disposal confirmation found, asking before finalization');
+    return askNextDisposalConfirmation(project, state, docsPath, now);
+  }
 
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'appendix',
@@ -2577,7 +2616,14 @@ function confirmationOptions() {
   ];
 }
 
-function disposalConfirmationOptions() {
+function disposalConfirmationOptions(waste) {
+  if (waste && (waste.code === '9120400' || !waste.suggestedHandling)) {
+    return [
+      { key: 'sorting', label: 'сортировка' },
+      { key: 'reuse', label: 'использование' },
+      { key: 'burial', label: 'захоронение' },
+    ];
+  }
   return [
     { key: 'yes', label: 'Да' },
     { key: 'no', label: 'Нет' },

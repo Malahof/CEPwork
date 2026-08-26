@@ -325,10 +325,30 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
     memory: null,
   });
 
+  // 3. Confirm the resolved disposal method for 1140202 (default захоронение)
+  assert.ok(project.extractedData.code112.pendingDisposalConfirmation, 'disposal confirmation should be requested');
+  await generate(project, {
+    answer: 'да',
+    now: 10,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
+  // 4. 9120400 requires manual disposal method selection
+  assert.ok(project.extractedData.code112.pendingDisposalConfirmation, '9120400 disposal confirmation should be requested');
+  await generate(project, {
+    answer: 'захоронение',
+    now: 11,
+    outputDir: tempDir,
+    docsPath,
+    memory: null,
+  });
+
   assert.equal(project.extractedData.code112.files.appendix.status, 'in_progress');
   assert.equal(project.extractedData.code112.files.appendix.downloadUrl, null);
   assert.equal(project.extractedData.code112.wastes.length, 2);
-  assert.match(project.history.at(-2).text, /Заполнил редактируемые страниц/);
+  assert.ok(project.history.some((entry) => /Заполнил редактируемые страниц/.test(entry.text)), 'should announce appendix completion after 9120400 disposal');
 
   const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
   const appendixPage = snapshot.pages.find((item) => item.id === 'agent-code112-uploaded-wastes-code112-appendix');
