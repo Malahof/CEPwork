@@ -493,7 +493,7 @@ app.post('/api/agent/upload', async (req, res, next) => {
         text: `Файл «${file.filename}» загружен, извлечено ${charCount} символов.`,
         createdAt: now,
       });
-      await registerCode112Upload(found, uploadRecord, { now });
+      await registerCode112Upload(found, uploadRecord, { now, buffer: file.buffer });
       found.updatedAt = now;
       return found;
     });

@@ -13,6 +13,8 @@ import {
   normalizeWasteExtractionMode,
   wasteExtractionModeOptions,
 } from '../wasteDataExtractor.js';
+import mammoth from 'mammoth';
+import * as cheerio from 'cheerio';
 
 export const code112FallbackMessage =
   'Извините, я пока не умею обрабатывать выбранный вами тип документации. Эта функция находится в разработке. Пожалуйста, выберите другой раздел или обратитесь к администратору.';
@@ -468,10 +470,18 @@ export async function registerCode112Upload(project, upload, options = {}) {
     console.log('[code112] registerCode112Upload: detected Sources upload, proposing sources extraction options');
     state.activeDocument = 'sources';
     state.files.sources.status = 'in_progress';
+
+    let preParsed = null;
+    if (options.buffer) {
+      preParsed = await extractSourcesFromDocxBuffer(options.buffer);
+      console.log('[code112] registerCode112Upload: pre-parsed', preParsed?.rows?.length ?? 0, 'source rows');
+    }
+
     state.pendingSourcesExtraction = {
       uploadIndex,
       fileName: upload.fileName,
       text: upload.text ?? '',
+      rows: preParsed && preParsed.rows.length ? preParsed.rows : null,
       createdAt: now,
     };
     state.updatedAt = now;
@@ -613,13 +623,24 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
     return project;
   }
 
-  const extracted = extractSourcesFromFile(upload.text ?? '');
+  let extracted = [];
+  if (Array.isArray(state.pendingSourcesExtraction?.rows) && state.pendingSourcesExtraction.rows.length) {
+    extracted = state.pendingSourcesExtraction.rows;
+    console.log('[code112] Using pre-parsed source rows:', extracted.length);
+  } else {
+    extracted = extractSourcesFromFile(upload.text ?? '');
+  }
   console.log('[code112] Extracted sources from file:', { fileName: upload.fileName, count: extracted.length });
 
   if (!extracted.length) {
     console.warn('[code112] No source rows found in uploaded file');
     state.pendingSourcesExtraction = null;
-    askUser(project, `В файле «${upload.fileName}» не нашёл таблицу Источников образования. Проверьте формат и загрузите снова.`, documentWorkOptions(), now);
+    askUser(
+      project,
+      `Не удалось автоматически распознать таблицу. Пожалуйста, убедитесь, что файл содержит таблицу с колонками: Номер источника, Наименование источника, Корпус, цех, участок, Код отхода, Наименование отхода, Количество образующихся отходов. Попробуйте загрузить другой файл или введите данные вручную.`,
+      documentWorkOptions(),
+      now
+    );
     project.updatedAt = now;
     return project;
   }
@@ -631,14 +652,15 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
       existing.sourceNumber = row.sourceNumber;
       existing.sourceName = row.sourceName;
       existing.site = row.site;
-      if (row.quantity) existing.quantityKg = row.quantity;
+      const sourceQuantity = row.quantity || row.quantityRaw;
+      if (sourceQuantity) existing.quantityKg = sourceQuantity;
       // Also update extractedWasteList
       const extractedExisting = state.extractedWasteList.find((w) => w.code === row.code);
       if (extractedExisting) {
         extractedExisting.sourceNumber = row.sourceNumber;
         extractedExisting.sourceName = row.sourceName;
         extractedExisting.site = row.site;
-        if (row.quantity) extractedExisting.quantityKg = row.quantity;
+        if (sourceQuantity) extractedExisting.quantityKg = sourceQuantity;
       }
     } else {
       newWastes.push({
@@ -647,7 +669,7 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
         sourceNumber: row.sourceNumber,
         sourceName: row.sourceName,
         site: row.site,
-        quantityKg: row.quantity || '',
+        quantityKg: row.quantity || row.quantityRaw || '',
         amount: '',
         unit: 'т',
         amountKg: 0,
@@ -705,13 +727,143 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
   return project;
 }
 
+export async function extractSourcesFromDocxBuffer(buffer) {
+  console.log('[code112] extractSourcesFromDocxBuffer: converting DOCX to HTML');
+  try {
+    const { value: html } = await mammoth.convertToHtml({ buffer });
+    console.log('[code112] extractSourcesFromDocxBuffer: HTML length', html.length);
+
+    const $ = cheerio.load(html);
+    const tableRows = [];
+    let pending = [];
+
+    $('table tr').each((rowIndex, rowEl) => {
+      const cells = [];
+      const nextPending = pending.map((q) => (q ? q.slice() : []));
+      for (let col = 0; col < nextPending.length; col++) {
+        if (nextPending[col]?.length > 0) {
+          cells[col] = nextPending[col].shift();
+        }
+      }
+
+      let col = 0;
+      $(rowEl)
+        .find('td, th')
+        .each((i, cellEl) => {
+          while (cells[col] !== undefined) col++;
+          const text = $(cellEl).text().trim().replace(/\s+/g, ' ');
+          const rowspan = parseInt($(cellEl).attr('rowspan')) || 1;
+          const colspan = parseInt($(cellEl).attr('colspan')) || 1;
+          for (let c = 0; c < colspan; c++) {
+            cells[col + c] = text;
+            for (let r = 1; r < rowspan; r++) {
+              if (!nextPending[col + c]) nextPending[col + c] = [];
+              nextPending[col + c].push(text);
+            }
+          }
+          col += colspan;
+        });
+
+      for (let col = 0; col < cells.length; col++) {
+        if (cells[col] === undefined) cells[col] = '';
+      }
+
+      pending = nextPending;
+      tableRows.push(cells);
+    });
+
+    console.log('[code112] extractSourcesFromDocxBuffer: expanded table rows', tableRows.length);
+
+    const headerPatterns = [
+      /номер\s*источника/,
+      /наименование\s*источника/,
+      /корпус.*цех.*участок/,
+      /код\s*отхода/,
+      /наименование\s*отхода/,
+      /количество\s*образующихся/,
+    ];
+
+    let headerIndex = -1;
+    for (let i = 0; i < tableRows.length; i++) {
+      const normalized = tableRows[i].map((c) => c.toLowerCase().replace(/[*\s]+/g, ' ').trim());
+      const matches = headerPatterns.filter((p) => normalized.some((c) => p.test(c))).length;
+      if (matches >= 4) {
+        headerIndex = i;
+        console.log('[code112] extractSourcesFromDocxBuffer: header row at index', i);
+        break;
+      }
+    }
+
+    if (headerIndex === -1) {
+      console.warn('[code112] extractSourcesFromDocxBuffer: no header row found');
+      return { rows: [] };
+    }
+
+    const rows = [];
+    for (let i = headerIndex + 1; i < tableRows.length; i++) {
+      const cells = tableRows[i];
+      if (!cells.length || cells.every((c) => !c.trim())) continue;
+
+      const first = cells[0].trim();
+      if (!first || /^\s*(\*|«\*»)/.test(first)) continue;
+      if (cells.every((c) => /^\d$/.test(c.trim()))) continue;
+      if (first.toLowerCase().includes('в соответствии с') || first.startsWith('(')) continue;
+
+      const sourceNumber = first.replace(/\D/g, '') || String(rows.length + 1);
+      if (!sourceNumber) continue;
+
+      const codeCell = cells[3] || '';
+      const codeMatch = codeCell.match(/\b\d{7}\b/) || cells.join(' ').match(/\b\d{7}\b/);
+      if (!codeMatch) continue;
+
+      const sourceName = (cells[1] || '').trim() || '—';
+      const site = (cells[2] || '').trim() || '—';
+      const wasteName = (cells[4] || '').trim() || '—';
+      const quantityCell = (cells[5] || '').trim();
+
+      let quantity = '';
+      let quantityRaw = quantityCell;
+      const isDash =
+        !quantityCell ||
+        /[−–—−-]+|^\*+--\*+$/.test(quantityCell) ||
+        quantityCell.toLowerCase().includes('--');
+      if (isDash) {
+        quantityRaw = '−';
+      } else {
+        const numMatch = quantityCell.match(/[\d\s,]+/);
+        if (numMatch) {
+          quantity = numMatch[0].replace(/\s/g, '').replace(',', '.');
+        } else {
+          quantityRaw = '−';
+        }
+      }
+
+      rows.push({
+        sourceNumber: String(parseInt(sourceNumber, 10) || sourceNumber),
+        sourceName,
+        site,
+        code: codeMatch[0],
+        wasteName,
+        quantity,
+        quantityRaw,
+      });
+    }
+
+    console.log('[code112] extractSourcesFromDocxBuffer: parsed', rows.length, 'rows', rows.slice(0, 3));
+    return { rows };
+  } catch (error) {
+    console.warn('[code112] extractSourcesFromDocxBuffer: error', error.message);
+    return { rows: [] };
+  }
+}
+
 function extractSourcesFromFile(text) {
   const rows = [];
   const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
   for (const line of lines) {
     if (/^\s*#/.test(line)) continue;
-    if (/^\*$/ || /^\*\s*-/.test(line)) continue;
+    if (/^(\*|«\*»)/.test(line.trim()) || /^\*+\s*-/.test(line.trim())) continue;
 
     let parts;
     if (line.includes('\t') || line.includes(';') || line.includes('|')) {
@@ -731,8 +883,25 @@ function extractSourcesFromFile(text) {
     if (/наименование|код отхода/i.test(sourceName)) continue;
     const code = codeMatch[0];
     const wasteName = parts[4];
-    const quantity = parts[5] ?? '';
-    const normalizedQuantity = /[-–—\-]+|^–$|^-$|^\*\*/.test(quantity) || quantity.toLowerCase().includes('--') ? '' : quantity;
+    const quantityCell = (parts[5] ?? '').trim();
+
+    let quantity = '';
+    let quantityRaw = quantityCell;
+    const isDash =
+      !quantityCell ||
+      /[-–—\-]+|^–$|^-$|^\*\*/.test(quantityCell) ||
+      quantityCell.toLowerCase().includes('--');
+    if (isDash) {
+      quantityRaw = '−';
+    } else {
+      const numMatch = quantityCell.match(/[\d\s,]+/);
+      if (numMatch) {
+        quantity = numMatch[0].replace(/\s/g, '').replace(',', '.');
+        quantityRaw = quantity;
+      } else {
+        quantityRaw = '−';
+      }
+    }
 
     rows.push({
       sourceNumber: sourceNumber || String(rows.length + 1),
@@ -740,7 +909,8 @@ function extractSourcesFromFile(text) {
       site: site || '—',
       code,
       wasteName: wasteName || '—',
-      quantity: normalizedQuantity,
+      quantity,
+      quantityRaw,
     });
   }
 

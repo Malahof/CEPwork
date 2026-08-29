@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import {
   buildAppendixRows,
   createDocxFromTemplate,
   enrichWasteListWithHazardClasses,
+  extractSourcesFromDocxBuffer,
   extractWasteListFromText,
   generate,
   getCode112Options,
@@ -571,6 +573,31 @@ test('code112 renders exactly the entered commission member count', async () => 
     assert.equal(countOccurrences(xml, 'Участник'), count);
     assert.doesNotMatch(xml, /\[должность_члена_комиссии\]|\[инициалы_фамилия_члена_комиссии\]/);
   }
+});
+
+const sourcesSamplePath = 'E:/Agents/Для работы/ТЕСТЫ/3 Источники.docx';
+
+test('code112 parses merged source table from sample DOCX', { skip: !existsSync(sourcesSamplePath) }, async () => {
+  const buffer = await readFile(sourcesSamplePath);
+  const { rows } = await extractSourcesFromDocxBuffer(buffer);
+
+  assert.equal(rows.length, 11, `expected 11 source rows, got ${rows.length}`);
+  assert.equal(rows[0].sourceNumber, '1');
+  assert.equal(rows[0].sourceName, 'Производственный процесс');
+  assert.equal(rows[0].site, 'Административно-производственный корпус, Производственно-складской корпус');
+  assert.equal(rows[0].code, '1110406');
+  assert.equal(rows[0].quantity, '');
+  assert.equal(rows[0].quantityRaw, '−');
+
+  const last = rows[rows.length - 1];
+  assert.equal(last.sourceNumber, '6');
+  assert.equal(last.code, '9120400');
+  assert.equal(last.quantity, '40');
+  assert.equal(last.quantityRaw, '40');
+
+  const source1 = rows.filter((row) => row.sourceNumber === '1');
+  assert.equal(source1.length, 3);
+  assert.ok(source1.some((row) => row.code === '5350202' && row.quantity === '70'));
 });
 
 async function readDocxDocumentXml(filePath) {
