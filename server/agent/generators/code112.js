@@ -258,6 +258,10 @@ export async function generate(projectData, userSources = {}) {
     return handleSourceConfirmationInput(projectData, state, answer, docsPath, now);
   }
 
+  if (state.awaitingSiteCount) {
+    return handleSiteCountInput(projectData, state, answer, docsPath, now);
+  }
+
   if (state.awaitingSourceQuantities) {
     return handleSourceQuantityInput(projectData, state, answer, docsPath, now);
   }
@@ -431,6 +435,9 @@ export function getCode112Options(project) {
   if (state.pendingAppendixEdit) return appendixEditOptions(state);
   if (state.pendingSourcesEdit) return confirmationOptions();
   if (state.pendingSourcesExtraction) return sourcesExtractionModeOptions();
+  if (state.pendingSourcesConfirmation) return confirmationOptions();
+  if (state.awaitingSourceDetails) return [];
+  if (state.awaitingSiteCount) return [];
   if (state.awaitingSourceQuantities) return [];
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingDisposalConfirmation) {
@@ -829,7 +836,7 @@ async function handleSourceConfirmationInput(project, state, answer, docsPath, n
     const normalized = normalizeAnswer(answer);
     if (isYesAnswer(normalized)) {
       state.pendingSourcesConfirmation = null;
-      return startSourceQuantityCollection(project, state, docsPath, now);
+      return startSiteCountCollection(project, state, docsPath, now);
     }
     if (isNoAnswer(normalized)) {
       state.pendingSourcesConfirmation = { stage: 'edit' };
@@ -894,6 +901,72 @@ async function handleSourceConfirmationInput(project, state, answer, docsPath, n
     return project;
   }
 
+  return project;
+}
+
+function needsSiteCountPrompt(waste) {
+  if (isFilledTemplateValue(waste.siteCount)) return false;
+  const text = String(waste.site || '').trim();
+  return /все\s*участки/i.test(text) || /весь\s*цех/i.test(text) || /все\s*корпуса/i.test(text);
+}
+
+async function startSiteCountCollection(project, state, docsPath, now) {
+  const queue = state.wastes
+    .filter((w) => w.sourceName && w.sourceName !== '—' && needsSiteCountPrompt(w))
+    .map((w) => w.code);
+  if (!queue.length) {
+    return startSourceQuantityCollection(project, state, docsPath, now);
+  }
+  state.awaitingSiteCount = { queue, index: 0 };
+  state.activeDocument = 'sources';
+  await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true, refreshWasteFormationContent: true });
+  askUser(project, buildSiteCountQuestion(state), [], now);
+  project.updatedAt = now;
+  return project;
+}
+
+function buildSiteCountQuestion(state) {
+  const queue = state.awaitingSiteCount?.queue || [];
+  const index = state.awaitingSiteCount?.index ?? 0;
+  const code = queue[index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) return 'Укажите общее количество участков.';
+  return `Для отхода ${waste.code} (${waste.name || '—'}) указано «Все участки». Укажите общее количество участков.`;
+}
+
+async function handleSiteCountInput(project, state, answer, docsPath, now) {
+  const queue = state.awaitingSiteCount?.queue || [];
+  const index = state.awaitingSiteCount?.index ?? 0;
+  const code = queue[index];
+  const waste = state.wastes.find((w) => w.code === code);
+
+  const count = String(answer).trim().replace(/\D/g, '');
+  if (!count || !waste) {
+    addAgentMessage(project, 'Введите число участков.', now);
+    askUser(project, buildSiteCountQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  waste.siteCount = count;
+  const extracted = state.extractedWasteList.find((w) => w.code === code);
+  if (extracted) extracted.siteCount = count;
+
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'sources',
+    refreshSourcesContent: true,
+    refreshWasteFormationContent: true,
+  });
+
+  const nextIndex = index + 1;
+  if (nextIndex >= queue.length) {
+    state.awaitingSiteCount = null;
+    return startSourceQuantityCollection(project, state, docsPath, now);
+  }
+
+  state.awaitingSiteCount = { queue, index: nextIndex };
+  askUser(project, buildSiteCountQuestion(state), [], now);
+  project.updatedAt = now;
   return project;
 }
 
@@ -1490,12 +1563,12 @@ function parseSourceQuantity(value) {
 
 function sourceQuantityToTons(value) {
   const text = String(value ?? '').trim();
-  if (!text || text === '−' || text === '-') return '−';
+  if (!text || text === '−' || text === '-' || isDashQuantity(text)) return '−';
   const { amount, unit } = parseSourceQuantity(text);
   if (!amount) return '−';
   if (unit === 'шт.') return `${formatNumber(amount)} шт.`;
-  if (unit === 'т') return `${formatNumber(amount)} т`;
-  return `${formatNumber(amount / 1000)} т`;
+  if (unit === 'т') return `${formatNumber(amount)}`;
+  return `${formatNumber(amount / 1000)}`;
 }
 
 function wasteGenerationRows(data) {
@@ -1645,6 +1718,7 @@ function ensureGeneratorState(project, now) {
       awaitingNormatives: null,
       awaitingSourceDetails: null,
       pendingSourcesConfirmation: null,
+      awaitingSiteCount: null,
       awaitingSourceQuantities: null,
       quantityInputMode: null,
       data: {},
@@ -1959,9 +2033,15 @@ function applySourceQuantityToWaste(state, code, quantity) {
     console.warn('[code112] Source quantity target not found:', code);
     return false;
   }
-  target.quantityKg = quantity.trim();
-  if (extractedTarget) extractedTarget.quantityKg = quantity.trim();
-  console.log('[code112] Source quantity set for', code, ':', quantity.trim());
+  const q = quantity.trim();
+  const parsed = parseSourceQuantity(q);
+  let stored = q;
+  if (isMercuryWaste(target.code, target.name) && parsed.unit !== 'шт.') {
+    stored = `${formatNumber(parsed.amount)} шт.`;
+  }
+  target.quantityKg = stored;
+  if (extractedTarget) extractedTarget.quantityKg = stored;
+  console.log('[code112] Source quantity set for', code, ':', stored);
   return true;
 }
 
