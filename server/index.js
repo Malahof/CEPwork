@@ -215,8 +215,9 @@ async function parseMultipartFormData(req) {
 
     const content = Buffer.from(part.slice(headerEnd + 4), 'latin1');
     if (disposition.filename) {
+      const decodedFilename = Buffer.from(disposition.filename, 'latin1').toString('utf8');
       files[disposition.name] = {
-        filename: path.basename(disposition.filename),
+        filename: path.basename(decodedFilename),
         mimeType: headers['content-type'] ?? 'application/octet-stream',
         buffer: content,
       };

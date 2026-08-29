@@ -250,6 +250,14 @@ export async function generate(projectData, userSources = {}) {
     return handleNormativeInput(projectData, state, answer, docsPath, now);
   }
 
+  if (state.awaitingSourceDetails) {
+    return handleSourceDetailsInput(projectData, state, answer, docsPath, now);
+  }
+
+  if (state.pendingSourcesConfirmation) {
+    return handleSourceConfirmationInput(projectData, state, answer, docsPath, now);
+  }
+
   if (state.awaitingSourceQuantities) {
     return handleSourceQuantityInput(projectData, state, answer, docsPath, now);
   }
@@ -307,6 +315,7 @@ export async function generate(projectData, userSources = {}) {
   if (selectedDocument) {
     state.activeDocument = selectedDocument.key;
     state.files[selectedDocument.key].status = 'in_progress';
+    await syncCode112ProjectPages(projectData, state, docsPath, now, { activateDocumentKey: selectedDocument.key });
     projectData.updatedAt = now;
     if (selectedDocument.key === 'appendix' && hasAppendixData(state)) {
       state.pendingAppendixEdit = { stage: 'confirm' };
@@ -663,36 +672,13 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
         if (sourceQuantity) extractedExisting.quantityKg = sourceQuantity;
       }
     } else {
-      newWastes.push({
-        code: row.code,
-        name: row.wasteName,
-        sourceNumber: row.sourceNumber,
-        sourceName: row.sourceName,
-        site: row.site,
-        quantityKg: row.quantity || row.quantityRaw || '',
-        amount: '',
-        unit: 'т',
-        amountKg: 0,
-        normative: '',
-        normativeConfirmed: false,
-        hazardClass: 'не указан',
-        physicalState: '',
-        composition: '',
-        properties: '',
-        suggestedHandling: '',
-        handlingSource: '',
-      });
+      missingCodes.push(row.code);
+      console.warn('[code112] Source code not in waste list, skipping:', row.code);
     }
   }
 
-  if (newWastes.length) {
-    console.log('[code112] New wastes from sources file:', newWastes.map((w) => w.code));
-    const enriched = await enrichWasteListWithHazardClasses(newWastes, userSources);
-    const resolved = await resolveWasteDisposalMethods(enriched, userSources);
-    for (const waste of resolved) {
-      state.wastes.push(waste);
-      state.extractedWasteList.push({ ...waste });
-    }
+  if (missingCodes.length) {
+    console.warn('[code112] Skipped source rows with unknown codes:', missingCodes);
   }
 
   state.extractedWasteList = state.extractedWasteList.sort(compareWasteCodes);
@@ -713,17 +699,219 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
 
   addAgentMessage(project, `Извлечено ${extracted.length} строк Источников образования.`, now);
 
-  const missingQuantities = state.wastes.filter((w) => w.sourceName && w.sourceName !== '—' && !isFilledTemplateValue(w.quantityKg));
-  if (missingQuantities.length) {
-    state.awaitingSourceQuantities = { queue: missingQuantities.map((w) => w.code), index: 0 };
-    state.quantityInputMode = 'source';
-    askUser(project, buildSourceQuantityQuestion(state), [], now);
+  return startSourceDetailsCollection(project, state, docsPath, now);
+}
+
+function wastesMissingSourceDetails(state) {
+  return state.wastes.filter((w) => {
+    const sourceNumber = String(w.sourceNumber ?? '').trim();
+    const sourceName = String(w.sourceName ?? '').trim();
+    const site = String(w.site ?? '').trim();
+    return !sourceNumber || sourceNumber === '—' || !sourceName || sourceName === '—' || !site || site === '—';
+  });
+}
+
+async function startSourceDetailsCollection(project, state, docsPath, now) {
+  const queue = wastesMissingSourceDetails(state);
+  if (queue.length) {
+    state.awaitingSourceDetails = { queue: queue.map((w) => w.code), index: 0 };
+    state.activeDocument = 'sources';
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true });
+    askUser(project, buildSourceDetailsQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+  return startSourceConfirmation(project, state, docsPath, now);
+}
+
+function buildSourceDetailsQuestion(state) {
+  const queue = state.awaitingSourceDetails?.queue || [];
+  const index = state.awaitingSourceDetails?.index ?? 0;
+  const code = queue[index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) return 'Укажите номер источника, наименование источника и участок для отхода.';
+  return `Для отхода ${waste.code} (${waste.name || '—'}) укажите через точку с запятой: номер источника; наименование источника; участок (корпус, цех, участок). Пример: 1;Производственный процесс;Административно-производственный корпус`;
+}
+
+function parseSourceDetailsAnswer(answer, currentCode) {
+  const text = String(answer).trim();
+
+  const explicitMatch = text.match(/^(\d{5,})\s*[:=]\s*(.+)$/s);
+  if (explicitMatch) {
+    const code = explicitMatch[1];
+    const rest = explicitMatch[2].trim();
+    const parts = rest.split(';').map((p) => p.trim()).filter(Boolean);
+    return { code, parts };
+  }
+
+  const parts = text.split(';').map((p) => p.trim()).filter(Boolean);
+  return { code: currentCode, parts };
+}
+
+async function handleSourceDetailsInput(project, state, answer, docsPath, now) {
+  const queue = state.awaitingSourceDetails?.queue || [];
+  const index = state.awaitingSourceDetails?.index ?? 0;
+  const currentCode = queue[index];
+
+  const { code, parts } = parseSourceDetailsAnswer(answer, currentCode);
+  const waste = state.wastes.find((w) => w.code === code);
+
+  if (!waste || parts.length < 2) {
+    addAgentMessage(project, 'Не удалось распознать данные. Используйте формат: номер;источник;участок или код: номер;источник;участок.', now);
+    askUser(project, buildSourceDetailsQuestion(state), [], now);
     project.updatedAt = now;
     return project;
   }
 
+  const sourceNumber = parts[0].replace(/\D/g, '');
+  const sourceName = parts[1];
+  const site = parts.slice(2).join('; ').trim();
+
+  if (!sourceNumber || !sourceName) {
+    addAgentMessage(project, 'Номер источника и наименование источника обязательны.', now);
+    askUser(project, buildSourceDetailsQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  waste.sourceNumber = sourceNumber;
+  waste.sourceName = sourceName;
+  waste.site = site || '—';
+
+  const extracted = state.extractedWasteList.find((w) => w.code === code);
+  if (extracted) {
+    extracted.sourceNumber = sourceNumber;
+    extracted.sourceName = sourceName;
+    extracted.site = waste.site;
+  }
+
+  console.log('[code112] Source details updated for', code, { sourceNumber, sourceName, site: waste.site });
+
+  await syncCode112ProjectPages(project, state, docsPath, now, {
+    activateDocumentKey: 'sources',
+    refreshSourcesContent: true,
+    refreshWasteFormationContent: true,
+  });
+
+  const nextIndex = index + 1;
+  if (nextIndex < queue.length) {
+    state.awaitingSourceDetails = { queue, index: nextIndex };
+    askUser(project, buildSourceDetailsQuestion(state), [], now);
+  } else {
+    state.awaitingSourceDetails = null;
+    await startSourceConfirmation(project, state, docsPath, now);
+  }
+
+  project.updatedAt = now;
+  return project;
+}
+
+function buildSourceConfirmationSummary(state) {
+  const lines = state.wastes
+    .filter((w) => w.sourceName && w.sourceName !== '—')
+    .map((w, i) => `${i + 1}. ${w.code} – ${w.name || w.wasteName || w.code}: ист. ${w.sourceNumber || '—'} «${w.sourceName || '—'}», участок ${w.site || '—'}`);
+  return ['Проверьте данные источников:', ...lines, '', 'Все данные для источников образования введены верно?'].join('\n');
+}
+
+async function startSourceConfirmation(project, state, docsPath, now) {
+  state.pendingSourcesConfirmation = { stage: 'confirm' };
   state.activeDocument = 'sources';
-  askUser(project, `Данные для файла «Источники образования отходов» сохранены. К чему теперь приступить?`, menuOptions(), now);
+  await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true });
+  askUser(project, buildSourceConfirmationSummary(state), confirmationOptions(), now);
+  project.updatedAt = now;
+  return project;
+}
+
+async function handleSourceConfirmationInput(project, state, answer, docsPath, now) {
+  const stage = state.pendingSourcesConfirmation?.stage ?? 'confirm';
+
+  if (stage === 'confirm') {
+    const normalized = normalizeAnswer(answer);
+    if (isYesAnswer(normalized)) {
+      state.pendingSourcesConfirmation = null;
+      return startSourceQuantityCollection(project, state, docsPath, now);
+    }
+    if (isNoAnswer(normalized)) {
+      state.pendingSourcesConfirmation = { stage: 'edit' };
+      askUser(project, 'Для какого отхода изменить данные? Введите код отхода или наименование.', [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    askUser(project, buildSourceConfirmationSummary(state), confirmationOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (stage === 'edit') {
+    const text = String(answer).trim();
+    const byCode = state.wastes.find((w) => w.code === text);
+    const byName = state.wastes.find((w) => normalizeAnswer(w.name || '') === normalizeAnswer(text));
+    const waste = byCode || byName;
+    if (!waste) {
+      addAgentMessage(project, 'Не удалось найти отход. Попробуйте ещё раз.', now);
+      askUser(project, 'Для какого отхода изменить данные? Введите код отхода или наименование.', [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    state.pendingSourcesConfirmation = { stage: 'editFields', code: waste.code };
+    askUser(project, `Для отхода ${waste.code} (${waste.name || '—'}) введите новые данные: номер источника; наименование источника; участок.`, [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (stage === 'editFields') {
+    const code = state.pendingSourcesConfirmation.code;
+    const waste = state.wastes.find((w) => w.code === code);
+    const parts = String(answer).trim().split(';').map((p) => p.trim()).filter(Boolean);
+    if (!waste || parts.length < 2) {
+      addAgentMessage(project, 'Не удалось распознать данные. Используйте формат: номер;источник;участок.', now);
+      askUser(project, `Для отхода ${code} введите новые данные: номер источника; наименование источника; участок.`, [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    const sourceNumber = parts[0].replace(/\D/g, '');
+    const sourceName = parts[1];
+    const site = parts.slice(2).join('; ').trim();
+    if (!sourceNumber || !sourceName) {
+      addAgentMessage(project, 'Номер источника и наименование обязательны.', now);
+      askUser(project, `Для отхода ${waste.code} (${waste.name || '—'}) введите новые данные: номер источника; наименование источника; участок.`, [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    waste.sourceNumber = sourceNumber;
+    waste.sourceName = sourceName;
+    waste.site = site || '—';
+    const extracted = state.extractedWasteList.find((w) => w.code === code);
+    if (extracted) {
+      extracted.sourceNumber = sourceNumber;
+      extracted.sourceName = sourceName;
+      extracted.site = waste.site;
+    }
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'sources', refreshSourcesContent: true });
+    state.pendingSourcesConfirmation = { stage: 'confirm' };
+    askUser(project, buildSourceConfirmationSummary(state), confirmationOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  return project;
+}
+
+async function startSourceQuantityCollection(project, state, docsPath, now) {
+  const queue = state.wastes
+    .filter((w) => w.sourceName && w.sourceName !== '—')
+    .map((w) => w.code);
+  if (!queue.length) {
+    state.activeDocument = 'sources';
+    askUser(project, 'Количества для источников не требуются. К чему теперь приступить?', menuOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+  state.awaitingSourceQuantities = { queue, index: 0 };
+  state.quantityInputMode = 'source';
+  state.activeDocument = 'sources';
+  askUser(project, buildSourceQuantityQuestion(state), [], now);
+  project.updatedAt = now;
   return project;
 }
 
@@ -1455,6 +1643,8 @@ function ensureGeneratorState(project, now) {
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
+      awaitingSourceDetails: null,
+      pendingSourcesConfirmation: null,
       awaitingSourceQuantities: null,
       quantityInputMode: null,
       data: {},
@@ -1690,6 +1880,11 @@ function hasNormativeMarker(value) {
   return normalized.includes(' на ') || normalized.includes(' в год ');
 }
 
+function isDashQuantity(value) {
+  const text = String(value).trim();
+  return /^[−–—\-]+\*?$|^\*+--\*+$|^(\*\*)?--(\*\*)?$/i.test(text);
+}
+
 function validateQuantityText(value) {
   const text = String(value).trim();
   if (!text) return { valid: false, message: 'Введите значение.' };
@@ -1706,6 +1901,13 @@ function validateQuantityText(value) {
     };
   }
   return { valid: true };
+}
+
+function validateSourceQuantityText(value) {
+  const text = String(value).trim();
+  if (!text) return { valid: false, message: 'Введите значение или −.' };
+  if (isDashQuantity(text)) return { valid: true };
+  return validateQuantityText(value);
 }
 
 function validateNormativeText(value) {
@@ -1732,7 +1934,10 @@ function buildSourceQuantityQuestion(state) {
   const code = queue[index];
   const waste = state.wastes.find((w) => w.code === code);
   if (!waste) return 'Укажите количество образующихся отходов в кг (или шт.) для каждого источника.';
-  return `Для отхода ${waste.code} (${waste.name}), источник «${waste.sourceName || '—'}», укажите количество образующихся отходов (кг или шт.). Пример: 70 или 150 шт.`;
+  const current = isFilledTemplateValue(waste.quantityKg) && !isDashQuantity(waste.quantityKg)
+    ? `текущее: ${waste.quantityKg}`
+    : 'текущее: −';
+  return `Для отхода ${waste.code} (${waste.name}), источник «${waste.sourceName || '—'}», укажите количество образующихся отходов (кг или шт.). ${current}. Пример: 70 или 150 шт. Введите −, чтобы оставить без значения.`;
 }
 
 function parseSourceQuantityList(text) {
@@ -1768,7 +1973,7 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
 
   if (list.length) {
     for (const { code, quantity } of list) {
-      const validation = validateQuantityText(quantity);
+      const validation = validateSourceQuantityText(quantity);
       if (!validation.valid) {
         console.warn('[code112] Invalid source quantity for', code, ':', quantity, validation.message);
         invalidMessages.push(`${code}: ${validation.message}`);
@@ -1792,7 +1997,7 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
     project.updatedAt = now;
     return project;
   } else {
-    const validation = validateQuantityText(answer);
+    const validation = validateSourceQuantityText(answer);
     if (!validation.valid) {
       console.warn('[code112] Invalid source quantity input:', answer, validation.message);
       addAgentMessage(project, validation.message, now);
@@ -1815,7 +2020,6 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
     }
   }
 
-  // Sync pages so the preview reflects entered source quantities
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'sources',
     refreshSourcesContent: true,
@@ -1823,7 +2027,6 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
   });
   console.log('[code112] Страницы обновлены после ввода количеств по источникам');
 
-  // Do not advance if any list entries were invalid
   if (invalidMessages.length) {
     addAgentMessage(
       project,
@@ -1839,6 +2042,7 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
     console.log('[code112] Source quantity list processed');
     state.awaitingSourceQuantities = null;
     state.quantityInputMode = null;
+    state.files.sources.status = 'ready';
     state.activeDocument = 'sources';
     askUser(project, 'Все количества по источникам сохранены. К чему теперь приступить?', menuOptions(), now);
     project.updatedAt = now;
@@ -1847,16 +2051,11 @@ async function handleSourceQuantityInput(project, state, answer, docsPath, now) 
 
   const queue = state.awaitingSourceQuantities?.queue || [];
   const nextIndex = (state.awaitingSourceQuantities?.index ?? 0) + 1;
-  while (nextIndex < queue.length) {
-    const code = queue[nextIndex];
-    const waste = state.wastes.find((w) => w.code === code);
-    if (waste && !isFilledTemplateValue(waste.quantityKg)) break;
-    nextIndex++;
-  }
   if (nextIndex >= queue.length) {
     console.log('[code112] All source quantities collected');
     state.awaitingSourceQuantities = null;
     state.quantityInputMode = null;
+    state.files.sources.status = 'ready';
     state.activeDocument = 'sources';
     askUser(project, 'Все количества по источникам сохранены. К чему теперь приступить?', menuOptions(), now);
     project.updatedAt = now;
