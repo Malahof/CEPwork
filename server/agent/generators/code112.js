@@ -654,7 +654,7 @@ async function processPendingSourcesExtraction(project, state, mode, now, userSo
     return project;
   }
 
-  const newWastes = [];
+  const missingCodes = [];
   for (const row of extracted) {
     const existing = state.wastes.find((w) => w.code === row.code);
     if (existing) {
