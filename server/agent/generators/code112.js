@@ -435,6 +435,24 @@ export function getCode112Options(project) {
   return menuOptions();
 }
 
+function isSourcesUpload(upload) {
+  const fileName = String(upload.fileName ?? '').toLowerCase();
+  const text = String(upload.text ?? '').toLowerCase();
+  return fileName.includes('источник')
+    || text.includes('источник')
+    || text.includes('номер источника')
+    || text.includes('наименование источника')
+    || text.includes('корпус, цех, участок');
+}
+
+function isWasteFormationUpload(upload) {
+  const text = String(upload.text ?? '').toLowerCase();
+  return text.includes('количество т/шт')
+    || text.includes('количество т')
+    || text.includes('норматив')
+    || text.includes('физическое состояние');
+}
+
 export async function registerCode112Upload(project, upload, options = {}) {
   if (project.packageCode !== '112' && !project.extractedData?.code112) return null;
 
@@ -442,8 +460,14 @@ export async function registerCode112Upload(project, upload, options = {}) {
   const state = ensureGeneratorState(project, now);
   const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
   const uploadIndex = Math.max(0, uploads.length - 1);
+  const textSample = String(upload.text ?? '').slice(0, 200).replace(/\s+/g, ' ');
 
-  if (state.activeDocument === 'sources' || upload.fileName?.toLowerCase().includes('источник')) {
+  console.log('[code112] registerCode112Upload: active document:', state.activeDocument, ', file:', upload.fileName, ', text sample:', textSample);
+
+  if (state.activeDocument === 'sources' || isSourcesUpload(upload)) {
+    console.log('[code112] registerCode112Upload: detected Sources upload, proposing sources extraction options');
+    state.activeDocument = 'sources';
+    state.files.sources.status = 'in_progress';
     state.pendingSourcesExtraction = {
       uploadIndex,
       fileName: upload.fileName,
@@ -454,13 +478,21 @@ export async function registerCode112Upload(project, upload, options = {}) {
     project.updatedAt = now;
     addAgentMessage(
       project,
-      `Файл «${upload.fileName}» готов к разбору. Какие данные для Источников образования извлечь?`,
+      `Файл «${upload.fileName}» похож на источники образования. Извлечь данные для Источников?`,
       now
     );
     askUser(project, 'Выберите режим извлечения данных из файла.', sourcesExtractionModeOptions(), now);
     return state.pendingSourcesExtraction;
   }
 
+  if (state.activeDocument === 'wasteFormation' || isWasteFormationUpload(upload)) {
+    console.log('[code112] registerCode112Upload: detected Waste formation upload, proposing standard extraction options');
+    state.activeDocument = 'wasteFormation';
+    state.files.wasteFormation.status = 'in_progress';
+    // TODO: implement pendingWasteFormationExtraction
+  }
+
+  console.log('[code112] registerCode112Upload: using standard waste extraction for appendix/waste list');
   state.pendingWasteExtraction = {
     uploadIndex,
     fileName: upload.fileName,
