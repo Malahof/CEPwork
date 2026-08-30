@@ -256,6 +256,8 @@ test('code112 fills editable appendix page from uploaded waste list before DOCX 
     docsPath,
     memory: null,
   });
+  project.extractedData.code112.activeDocument = 'appendix';
+
   await registerCode112Upload(
     project,
     {

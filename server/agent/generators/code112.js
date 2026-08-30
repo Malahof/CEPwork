@@ -229,6 +229,31 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
+  if (state.pendingUploadDocumentSelection) {
+    const normalized = normalizeAnswer(answer);
+    const selected = uploadDocumentSelectionOptions().find((o) =>
+      normalized === o.key || normalized === normalizeAnswer(o.label) || answer.includes(o.label)
+    );
+    const pending = state.pendingUploadDocumentSelection;
+    if (!selected) {
+      askUser(projectData, 'Не удалось определить документ. Выберите из списка.', uploadDocumentSelectionOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    if (!['appendix', 'sources', 'wasteFormation'].includes(selected.key)) {
+      state.pendingUploadDocumentSelection = null;
+      askUser(projectData, `Загрузка файла для «${selected.label}» пока не поддерживается. К чему теперь приступить?`, menuOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    state.pendingUploadDocumentSelection = null;
+    state.activeDocument = selected.key;
+    state.updatedAt = now;
+    const upload = projectData.extractedData.uploads[pending.uploadIndex];
+    const buffer = pending.bufferBase64 ? Buffer.from(pending.bufferBase64, 'base64') : null;
+    return registerCode112Upload(projectData, upload, { ...userSources, now, buffer });
+  }
+
   if (state.pendingWasteExtraction) {
     const mode = normalizeWasteExtractionMode(answer);
     if (!mode) {
@@ -439,6 +464,15 @@ export function getCode112Question(project) {
   return 'К чему теперь приступить?';
 }
 
+function uploadDocumentSelectionOptions() {
+  return [
+    { key: 'appendix', label: 'Приложение к акту' },
+    { key: 'sources', label: 'Источники образования' },
+    { key: 'wasteFormation', label: 'Сведения о количестве' },
+    { key: 'measures', label: 'Перечень мероприятий' },
+  ];
+}
+
 export function getCode112Options(project) {
   const state = project.extractedData?.code112;
   if (!state) return [];
@@ -452,6 +486,7 @@ export function getCode112Options(project) {
   if (state.awaitingSiteCount) return [];
   if (state.awaitingSourceQuantities) return [];
   if (state.pendingWasteImport) return confirmationOptions();
+  if (state.pendingUploadDocumentSelection) return uploadDocumentSelectionOptions();
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
     return disposalConfirmationOptions(pendingWaste);
@@ -476,12 +511,24 @@ function isSourcesUpload(upload) {
     || text.includes('корпус, цех, участок');
 }
 
+function isAppendixUpload(upload) {
+  const fileName = String(upload.fileName ?? '').toLowerCase();
+  const text = String(upload.text ?? '').toLowerCase();
+  return fileName.includes('прилож')
+    || text.includes('приложение к акту')
+    || text.includes('норматив образования')
+    || text.includes('подлежит заготовке')
+    || text.includes('подлежит сортировке')
+    || text.includes('количество образующихся отходов');
+}
+
 function isWasteFormationUpload(upload) {
   const text = String(upload.text ?? '').toLowerCase();
   return text.includes('состав отходов')
     || text.includes('агрегатное состояние')
     || text.includes('физико-химическая')
-    || text.includes('количество образующихся отходов производства в год');
+    || text.includes('сведения о количестве')
+    || text.includes('опасные свойства');
 }
 
 export async function registerCode112Upload(project, upload, options = {}) {
@@ -495,7 +542,59 @@ export async function registerCode112Upload(project, upload, options = {}) {
 
   console.log('[code112] registerCode112Upload: active document:', state.activeDocument, ', file:', upload.fileName, ', text sample:', textSample);
 
-  if (state.activeDocument === 'sources' || isSourcesUpload(upload)) {
+  let detected = null;
+  if (isSourcesUpload(upload)) detected = 'sources';
+  else if (isWasteFormationUpload(upload)) detected = 'wasteFormation';
+  else if (isAppendixUpload(upload)) detected = 'appendix';
+  console.log('[code112] registerCode112Upload: detected type:', detected);
+
+  const bufferBase64 = options.buffer ? options.buffer.toString('base64') : null;
+
+  if (!state.activeDocument) {
+    console.log('[code112] registerCode112Upload: no active document, asking user to choose');
+    state.pendingUploadDocumentSelection = {
+      uploadIndex,
+      fileName: upload.fileName,
+      detected,
+      bufferBase64,
+      createdAt: now,
+    };
+    state.updatedAt = now;
+    project.updatedAt = now;
+    addAgentMessage(project, `Файл «${upload.fileName}» загружен. Для какого документа акта инвентаризации его использовать?`, now);
+    askUser(project, 'Выберите документ, для которого предназначен файл.', uploadDocumentSelectionOptions(), now);
+    return state.pendingUploadDocumentSelection;
+  }
+
+  if (detected && detected !== state.activeDocument) {
+    console.log('[code112] registerCode112Upload: detected', detected, 'does not match active', state.activeDocument);
+    state.pendingUploadDocumentSelection = {
+      uploadIndex,
+      fileName: upload.fileName,
+      detected,
+      expected: state.activeDocument,
+      bufferBase64,
+      createdAt: now,
+    };
+    state.updatedAt = now;
+    project.updatedAt = now;
+    const detectedLabel = documentByKey.get(detected)?.label ?? detected;
+    const activeLabel = documentByKey.get(state.activeDocument)?.label ?? state.activeDocument;
+    addAgentMessage(
+      project,
+      `Загруженный файл «${upload.fileName}» похож на «${detectedLabel}», а активен документ «${activeLabel}». Для какого документа использовать файл?`,
+      now
+    );
+    askUser(
+      project,
+      'Загруженный файл, похоже, не соответствует выбранному документу. Убедитесь, что вы загружаете правильный файл, или выберите другой документ.',
+      uploadDocumentSelectionOptions(),
+      now
+    );
+    return state.pendingUploadDocumentSelection;
+  }
+
+  if (state.activeDocument === 'sources' || detected === 'sources') {
     console.log('[code112] registerCode112Upload: detected Sources upload, proposing sources extraction options');
     state.activeDocument = 'sources';
     state.files.sources.status = 'in_progress';
@@ -524,7 +623,7 @@ export async function registerCode112Upload(project, upload, options = {}) {
     return state.pendingSourcesExtraction;
   }
 
-  if (state.activeDocument === 'wasteFormation' || isWasteFormationUpload(upload)) {
+  if (state.activeDocument === 'wasteFormation' || detected === 'wasteFormation') {
     console.log('[code112] registerCode112Upload: detected Waste formation upload, asking for confirmation');
     state.activeDocument = 'wasteFormation';
     state.files.wasteFormation.status = 'in_progress';
@@ -532,7 +631,7 @@ export async function registerCode112Upload(project, upload, options = {}) {
       uploadIndex,
       fileName: upload.fileName,
       text: upload.text ?? '',
-      bufferBase64: options.buffer ? options.buffer.toString('base64') : null,
+      bufferBase64,
       createdAt: now,
     };
     state.updatedAt = now;
@@ -547,6 +646,8 @@ export async function registerCode112Upload(project, upload, options = {}) {
   }
 
   console.log('[code112] registerCode112Upload: using standard waste extraction for appendix/waste list');
+  state.activeDocument = 'appendix';
+  state.files.appendix.status = 'in_progress';
   state.pendingWasteExtraction = {
     uploadIndex,
     fileName: upload.fileName,
@@ -2087,6 +2188,7 @@ function ensureGeneratorState(project, now) {
       updatedAt: now,
       activeDocument: null,
       awaitingOrganizationName: false,
+      pendingUploadDocumentSelection: null,
       pendingWasteExtraction: null,
       pendingWasteImport: null,
       pendingAppendixEdit: null,
@@ -2095,6 +2197,7 @@ function ensureGeneratorState(project, now) {
       completingAfterDisposal: false,
       pendingDisposalConfirmation: null,
       pendingSourcesExtraction: null,
+      pendingWasteFormationExtraction: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2138,6 +2241,8 @@ function ensureGeneratorState(project, now) {
       project.extractedData.code112.data = {};
     }
     // Ensure critical fields are initialized
+    project.extractedData.code112.pendingUploadDocumentSelection = project.extractedData.code112.pendingUploadDocumentSelection ?? null;
+    project.extractedData.code112.pendingWasteFormationExtraction = project.extractedData.code112.pendingWasteFormationExtraction ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
