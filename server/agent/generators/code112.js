@@ -1335,18 +1335,18 @@ function parseCompositionCell($, nameHtml, percentHtml) {
 
   const hasName = names.some((n) => n.length > 0);
   if (hasName && !percents.length) {
-    return names.map((name) => ({ name, percent: '−' }));
+    return names.map((name) => ({ name, percentage: '−' }));
   }
 
   const components = [];
   const max = Math.max(names.length, percents.length);
   for (let i = 0; i < max; i++) {
     const name = names[i] ?? '';
-    const percent = percents[i] ?? '';
-    if (!name && !percent) continue;
+    const percentage = percents[i] ?? '';
+    if (!name && !percentage) continue;
     components.push({
       name: name || '−',
-      percent: percent || '−',
+      percentage: percentage || '−',
     });
   }
   return components;
@@ -1564,15 +1564,15 @@ function formatComposition(components) {
   if (components.length === 1) {
     return `${components[0].name}`;
   }
-  return components.map((c) => c.name).join('\n');
+  return components.map((c) => c.name).join('<br>');
 }
 
 function formatCompositionPercent(components) {
   if (!components.length) return '';
   if (components.length === 1) {
-    return `${components[0].percent}`;
+    return `${components[0].percentage ?? components[0].percent}`;
   }
-  return components.map((c) => c.percent).join('\n');
+  return components.map((c) => c.percentage ?? c.percent).join('<br>');
 }
 
 let compositionReferenceCache = null;
@@ -1706,8 +1706,8 @@ function parseCompositionInput(text) {
     const match = part.match(/^(.+?):\s*([\d,\-]+)\s*%?$/);
     if (!match) return null;
     const name = match[1].trim();
-    const percent = String(match[2]).replace(',', '.');
-    components.push({ name, percent });
+    const percentage = String(match[2]).replace(',', '.');
+    components.push({ name, percentage });
   }
   return components.length ? components : null;
 }
