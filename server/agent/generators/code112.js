@@ -283,6 +283,10 @@ export async function generate(projectData, userSources = {}) {
     return handleWasteFormationCompositionInput(projectData, state, answer, docsPath, now);
   }
 
+  if (state.awaitingPhysicalState) {
+    return handlePhysicalStateInput(projectData, state, answer, docsPath, now);
+  }
+
   if (state.pendingDisposalConfirmation) {
     return handleDisposalConfirmation(projectData, state, answer, docsPath, now);
   }
@@ -492,6 +496,7 @@ export function getCode112Options(project) {
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingUploadDocumentSelection) return uploadDocumentSelectionOptions();
   if (state.awaitingWasteFormationComposition) return [];
+  if (state.awaitingPhysicalState) return state.awaitingPhysicalState.stage === 'confirm' ? confirmationOptions() : [];
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
     return disposalConfirmationOptions(pendingWaste);
@@ -1696,7 +1701,7 @@ function buildWasteFormationCompositionQuestion(state) {
   const code = queue[index];
   const waste = state.wastes.find((w) => w.code === code);
   if (!waste) return 'Укажите состав отхода в формате "Компонент: процент; Компонент: процент".';
-  return `Для отхода ${waste.code} (${waste.name || '—'}) введите состав и процентное содержание в формате "Компонент1: процент; Компонент2: процент". Пример: "Резина: 82; Металл: 18".`;
+  return `Для отхода ${waste.code} (${waste.name || '—'}) не указан состав. Введите состав и процентное содержание в формате "Компонент1: процент; Компонент2: процент". Пример: "Резина: 82; Металл: 18". Если состав сложный и не поддаётся разбивке, введите "Сложнокомпонентный состав" — тогда в колонке 10 останется «−».`;
 }
 
 function parseCompositionInput(text) {
@@ -1735,6 +1740,11 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
   if (normalized === '−' || normalized === 'неданных' || normalized === 'нет' || answer.trim() === '−') {
     waste.composition = '−';
     waste.compositionPercent = '−';
+    waste.compositionComponents = [];
+  } else if (normalized === 'сложнокомпонентный состав' || answer.trim().toLowerCase() === 'сложнокомпонентный состав') {
+    waste.composition = 'Сложнокомпонентный состав';
+    waste.compositionPercent = '−';
+    waste.compositionComponents = [];
   } else {
     const components = parseCompositionInput(answer);
     if (!components) {
@@ -1755,14 +1765,107 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
   comp.index++;
   if (comp.index >= comp.queue.length) {
     state.awaitingWasteFormationComposition = null;
-    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
-    askUser(project, 'Состав всех отходов заполнен. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+    const started = await ensureWasteFormationData(project, state, docsPath, now);
+    if (!started) {
+      await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+      askUser(project, 'Состав всех отходов заполнен. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+    }
   } else {
     await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
     askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
   }
   project.updatedAt = now;
   return project;
+}
+
+function buildPhysicalStateQuestion(state) {
+  const q = state.awaitingPhysicalState;
+  if (!q) return 'Укажите физическое состояние отходов.';
+  if (q.stage === 'confirm') {
+    return 'Укажите физическое состояние отходов. По умолчанию все отходы — "твердые". Хотите изменить для каких-либо отходов?';
+  }
+  return 'Введите коды отходов, для которых нужно установить "жидкие", через запятую (например, 5410201, 5410202). Или введите "Все тв" для всех отходов (оставить "твердые") или "Все жд" для всех "жидкие".';
+}
+
+async function handlePhysicalStateInput(project, state, answer, docsPath, now) {
+  const q = state.awaitingPhysicalState;
+  if (!q) return project;
+
+  const normalized = normalizeAnswer(answer);
+  if (q.stage === 'confirm') {
+    if (isNoAnswer(normalized)) {
+      state.physicalStateConfirmed = true;
+      state.awaitingPhysicalState = null;
+      state.wastes.forEach((w) => { w.physicalState = w.physicalState || 'твердые'; });
+      await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+      askUser(project, 'Физическое состояние сохранено. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+      project.updatedAt = now;
+      return project;
+    }
+    if (isYesAnswer(normalized)) {
+      state.awaitingPhysicalState = { stage: 'codes' };
+      await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+      askUser(project, buildPhysicalStateQuestion(state), [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    askUser(project, buildPhysicalStateQuestion(state), confirmationOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  const lower = answer.toLowerCase().trim();
+  if (lower === 'все тв' || lower === 'все твердые') {
+    state.wastes.forEach((w) => { w.physicalState = 'твердые'; });
+  } else if (lower === 'все жд' || lower === 'все жидкие') {
+    state.wastes.forEach((w) => { w.physicalState = 'жидкие'; });
+  } else {
+    const entries = answer.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+    for (const entry of entries) {
+      const parts = entry.split(/\s+/);
+      const code = parts[0];
+      const token = parts.slice(1).join(' ').toLowerCase();
+      const waste = state.wastes.find((w) => w.code === code);
+      if (waste) {
+        if (token.includes('жд') || token.includes('жидк')) {
+          waste.physicalState = 'жидкие';
+        } else if (token.includes('тв') || token.includes('тверд')) {
+          waste.physicalState = 'твердые';
+        } else {
+          waste.physicalState = 'жидкие';
+        }
+      }
+    }
+  }
+
+  state.physicalStateConfirmed = true;
+  state.awaitingPhysicalState = null;
+  await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+  askUser(project, 'Физическое состояние сохранено. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+  project.updatedAt = now;
+  return project;
+}
+
+async function ensureWasteFormationData(project, state, docsPath, now) {
+  const missingComposition = state.wastes.filter((w) => !w.composition);
+  if (missingComposition.length && !state.awaitingWasteFormationComposition) {
+    state.awaitingWasteFormationComposition = {
+      queue: missingComposition.map((w) => w.code),
+      index: 0,
+    };
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+    askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
+    return true;
+  }
+
+  if (!state.physicalStateConfirmed && !state.awaitingPhysicalState) {
+    state.awaitingPhysicalState = { stage: 'confirm' };
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+    askUser(project, buildPhysicalStateQuestion(state), confirmationOptions(), now);
+    return true;
+  }
+
+  return false;
 }
 
 function applyWasteFormationAnswer(state, answer) {
@@ -2364,6 +2467,8 @@ function ensureGeneratorState(project, now) {
       pendingSourcesExtraction: null,
       pendingWasteFormationExtraction: null,
       awaitingWasteFormationComposition: null,
+      awaitingPhysicalState: null,
+      physicalStateConfirmed: false,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2410,6 +2515,8 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.pendingUploadDocumentSelection = project.extractedData.code112.pendingUploadDocumentSelection ?? null;
     project.extractedData.code112.pendingWasteFormationExtraction = project.extractedData.code112.pendingWasteFormationExtraction ?? null;
     project.extractedData.code112.awaitingWasteFormationComposition = project.extractedData.code112.awaitingWasteFormationComposition ?? null;
+    project.extractedData.code112.awaitingPhysicalState = project.extractedData.code112.awaitingPhysicalState ?? null;
+    project.extractedData.code112.physicalStateConfirmed = project.extractedData.code112.physicalStateConfirmed ?? false;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
@@ -2658,6 +2765,14 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
     askUser(project, nextQuestion || `Данные для файла «${document.label}» сохранены. К чему теперь приступить?`, nextQuestion ? documentWorkOptions(state, document.key) : menuOptions(), now);
     project.updatedAt = now;
     return project;
+  }
+
+  if (document.key === 'wasteFormation') {
+    const started = await ensureWasteFormationData(project, state, docsPath, now);
+    if (started) {
+      project.updatedAt = now;
+      return project;
+    }
   }
 
   askUser(
