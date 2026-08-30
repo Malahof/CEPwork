@@ -528,7 +528,8 @@ function isWasteFormationUpload(upload) {
     || text.includes('агрегатное состояние')
     || text.includes('физико-химическая')
     || text.includes('сведения о количестве')
-    || text.includes('опасные свойства');
+    || text.includes('опасные свойства')
+    || text.includes('компонент');
 }
 
 export async function registerCode112Upload(project, upload, options = {}) {
@@ -543,8 +544,8 @@ export async function registerCode112Upload(project, upload, options = {}) {
   console.log('[code112] registerCode112Upload: active document:', state.activeDocument, ', file:', upload.fileName, ', text sample:', textSample);
 
   let detected = null;
-  if (isSourcesUpload(upload)) detected = 'sources';
-  else if (isWasteFormationUpload(upload)) detected = 'wasteFormation';
+  if (isWasteFormationUpload(upload)) detected = 'wasteFormation';
+  else if (isSourcesUpload(upload)) detected = 'sources';
   else if (isAppendixUpload(upload)) detected = 'appendix';
   console.log('[code112] registerCode112Upload: detected type:', detected);
 
@@ -1458,23 +1459,14 @@ export async function extractWasteFormationFromDocxBuffer(buffer) {
   }
 }
 
-function determineHazardProperties(code) {
+function determineHazardProperties(code, hazardClass) {
   const c = String(code);
+  const cls = normalizeHazardClass(hazardClass);
   const properties = [];
 
-  // п/п 1 – Экотоксичность
-  if (/^31/.test(c) || /^511/.test(c)) {
-    properties.push('Экотоксичность');
-  }
-
-  // п/п 2 – Токсичность
-  if (c !== '1719905') {
-    if (/^17/.test(c) && !/^171/.test(c) && !/^173/.test(c)) {
-      properties.push('Токсичность');
-    }
-    if (/^16/.test(c)) {
-      properties.push('Токсичность');
-    }
+  // п/п 2 – Токсичность: опасные отходы 1–4 классов
+  if (['1', '2', '3', '4'].includes(cls)) {
+    properties.push('Токсичность');
   }
 
   // п/п 3 – Взрывоопасность и пожароопасность
@@ -1482,7 +1474,14 @@ function determineHazardProperties(code) {
     properties.push('Взрывоопасность и пожароопасность по группам горючести и токсичности продуктов горения');
   }
 
-  return properties.join(' ');
+  // п/п 1 – Экотоксичность
+  if (/^31/.test(c) || /^511/.test(c)) {
+    properties.push('Экотоксичность');
+  }
+
+  const result = properties.length ? properties.join(' ') : (cls === 'неопасные' ? '−' : '');
+  console.log('[code112] determineHazardProperties:', { code, class: cls, properties: result });
+  return result;
 }
 
 function formatComposition(components) {
@@ -2066,7 +2065,7 @@ function wasteGenerationRows(data) {
     физ_сост: (waste.physicalState && waste.physicalState !== 'не указано') ? waste.physicalState : 'твердые',
     состав: waste.composition || DASH,
     'состав_%': waste.compositionPercent || DASH,
-    свойства: waste.properties || determineHazardProperties(waste.code) || DASH,
+    свойства: waste.properties || determineHazardProperties(waste.code, waste.hazardClass) || DASH,
     класс: getClassDescription(waste.hazardClass),
   }));
 }
