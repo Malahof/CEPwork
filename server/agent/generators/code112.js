@@ -307,10 +307,6 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
-  if (isUploadedWasteCommand(answer)) {
-    return fillAppendixFromExtractedWastes(projectData, state, docsPath, now, { explicit: true, refreshAllPages: true });
-  }
-
   if (state.activeDocument) {
     return finishActiveDocument(projectData, state, answer, outputDir, docsPath, now);
   }
@@ -1842,6 +1838,100 @@ function buildDocumentQuestion(document, state) {
   ].join('\n');
 }
 
+function detectFileDocumentType(upload) {
+  const fileName = String(upload?.fileName ?? '').toLowerCase();
+  const text = String(upload?.text ?? '').toLowerCase();
+
+  if (fileName.includes('источник')
+    || text.includes('номер источника')
+    || text.includes('наименование источника')
+    || text.includes('корпус, цех, участок')) {
+    return 'sources';
+  }
+
+  if (fileName.includes('образован')
+    || fileName.includes('количество т/шт')
+    || text.includes('количество т/шт')
+    || text.includes('норматив')
+    || text.includes('физическое состояние')) {
+    return 'wasteFormation';
+  }
+
+  if (fileName.includes('прилож')
+    || fileName.includes('отходы')
+    || text.match(/\b\d{7}\b/)?.length > 0) {
+    return 'appendix';
+  }
+
+  if (fileName.includes('мероприят')) {
+    return 'measures';
+  }
+
+  if (fileName.includes('титул') || fileName.includes('акт')) {
+    return 'titleAct';
+  }
+
+  if (text.match(/\b\d{7}\b/)) return 'appendix';
+
+  return null;
+}
+
+async function handleUseUploadedFile(project, state, document, docsPath, now) {
+  const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
+  const lastUpload = uploads.at(-1);
+
+  if (!lastUpload) {
+    console.log('[code112] handleUseUploadedFile: no uploads, active document:', document.key);
+    askUser(
+      project,
+      `Файл ещё не загружен. Загрузите файл для «${document.label}» и повторите «Заполнить из загруженного файла».`,
+      documentWorkOptions(),
+      now
+    );
+    project.updatedAt = now;
+    return project;
+  }
+
+  const detectedType = detectFileDocumentType(lastUpload);
+  console.log('[code112] handleUseUploadedFile: active document:', document.key, ', file:', lastUpload.fileName, ', detected:', detectedType);
+
+  if (detectedType !== document.key) {
+    const actualLabel = detectedType ? (documentByKey.get(detectedType)?.label ?? 'неизвестен') : 'неизвестен';
+    const message =
+      document.key === 'sources'
+        ? `Для страницы "Источники образования" требуется файл с данными источников (колонки: Номер источника, Наименование источника, Корпус, цех, участок, Код отхода, Наименование отхода, Количество). Загруженный файл, похоже, является ${actualLabel === 'Приложение к акту инвентаризации' ? 'Приложением к акту' : `«${actualLabel}»`}. Пожалуйста, загрузите правильный файл, и затем выберите "Заполнить из загруженного файла".`
+        : `Для страницы «${document.label}» требуется файл с данными ${document.label}. Загруженный файл, похоже, является «${actualLabel}». Пожалуйста, загрузите правильный файл, и затем выберите «Заполнить из загруженного файла».`;
+    askUser(project, message, documentWorkOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (document.key === 'appendix') {
+    return fillAppendixFromExtractedWastes(project, state, docsPath, now, { explicit: true, refreshAllPages: true });
+  }
+
+  if (document.key === 'sources') {
+    state.pendingSourcesExtraction = {
+      uploadIndex: uploads.length - 1,
+      fileName: lastUpload.fileName,
+      text: lastUpload.text ?? '',
+      rows: null,
+      createdAt: now,
+    };
+    state.files.sources.status = 'in_progress';
+    return processPendingSourcesExtraction(project, state, 'all', now, { docsPath });
+  }
+
+  askUser(
+    project,
+    `Заполнение файла «${document.label}» из загруженного файла пока не поддерживается.`,
+    documentWorkOptions(),
+    now
+  );
+  project.updatedAt = now;
+  return project;
+}
+
 async function finishActiveDocument(project, state, answer, outputDir, docsPath, now) {
   const document = documentByKey.get(state.activeDocument);
   if (!document) {
@@ -1869,8 +1959,12 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
     return project;
   }
 
-  if (document.key === 'appendix' && (isUploadedWasteCommand(answer) || normalizeAnswer(answer) === 'createdraft' || normalizeAnswer(answer) === normalizeAnswer('Создать черновик'))) {
-    return fillAppendixFromExtractedWastes(project, state, docsPath, now, { explicit: isUploadedWasteCommand(answer), refreshAllPages: true });
+  if (isUploadedWasteCommand(answer)) {
+    return await handleUseUploadedFile(project, state, document, docsPath, now);
+  }
+
+  if (document.key === 'appendix' && (normalizeAnswer(answer) === 'createdraft' || normalizeAnswer(answer) === normalizeAnswer('Создать черновик'))) {
+    return fillAppendixFromExtractedWastes(project, state, docsPath, now, { explicit: true, refreshAllPages: true });
   }
 
   const parsedAnswer = parseManualInput(answer);
