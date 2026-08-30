@@ -1550,7 +1550,7 @@ function determineHazardProperties(code, hazardClass) {
   }
 
   // п/п 5 – Инфекционность
-  if (matchesRule(c, { block: 8 })) {
+  if (matchesRule(c, { block: 7 })) {
     properties.push('Инфекционность');
   }
 
