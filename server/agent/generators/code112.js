@@ -279,6 +279,10 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
+  if (state.awaitingWasteFormationComposition) {
+    return handleWasteFormationCompositionInput(projectData, state, answer, docsPath, now);
+  }
+
   if (state.pendingDisposalConfirmation) {
     return handleDisposalConfirmation(projectData, state, answer, docsPath, now);
   }
@@ -487,6 +491,7 @@ export function getCode112Options(project) {
   if (state.awaitingSourceQuantities) return [];
   if (state.pendingWasteImport) return confirmationOptions();
   if (state.pendingUploadDocumentSelection) return uploadDocumentSelectionOptions();
+  if (state.awaitingWasteFormationComposition) return [];
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
     return disposalConfirmationOptions(pendingWaste);
@@ -1459,27 +1464,97 @@ export async function extractWasteFormationFromDocxBuffer(buffer) {
   }
 }
 
+const NO_TOXICITY_CODES = new Set([
+  '410401', '1410403', '1410404', '1410407', '1410600', '1410800', '1410801',
+  '1410802', '1410804', '1411000', '1411900', '1470710', '1470711', '1470718',
+  '1471500', '1719905',
+]);
+
+const LOWER_FLAMMABILITY_CODES = new Set(['470400', '1470714', '5810301', '5810501', '5810609']);
+
+function matchesRule(code, rule) {
+  const c = String(code);
+  if (!c) return false;
+  const block = Number(c[0]);
+  const section = c.length >= 2 ? Number(c[1]) : null;
+  const group = c.length >= 3 ? Number(c[2]) : null;
+  if (rule.block != null && block !== rule.block) return false;
+  if (rule.section != null && section !== rule.section) return false;
+  if (rule.group != null && group !== rule.group) return false;
+  return true;
+}
+
 function determineHazardProperties(code, hazardClass) {
   const c = String(code);
   const cls = normalizeHazardClass(hazardClass);
+
+  if (cls === 'неопасные') {
+    console.log('[code112] determineHazardProperties:', { code, class: cls, properties: '−' });
+    return '−';
+  }
+
   const properties = [];
 
-  // п/п 2 – Токсичность: опасные отходы 1–4 классов
-  if (['1', '2', '3', '4'].includes(cls)) {
-    properties.push('Токсичность');
-  }
-
-  // п/п 3 – Взрывоопасность и пожароопасность
-  if (/^(14|16|17|18)/.test(c)) {
-    properties.push('Взрывоопасность и пожароопасность по группам горючести и токсичности продуктов горения');
-  }
-
   // п/п 1 – Экотоксичность
-  if (/^31/.test(c) || /^511/.test(c)) {
+  const ecotoxicityRules = [
+    { block: 3, section: 1 },
+    { block: 5, section: 1, group: 1 },
+    { block: 5, section: 1, group: 3 },
+    { block: 5, section: 2, group: 7 },
+    { block: 5, section: 4 },
+    { block: 5, section: 9, group: 4 },
+    { block: 5, section: 9, group: 5 },
+    { block: 8 },
+  ];
+  if (ecotoxicityRules.some((rule) => matchesRule(c, rule))) {
     properties.push('Экотоксичность');
   }
 
-  const result = properties.length ? properties.join(' ') : (cls === 'неопасные' ? '−' : '');
+  // п/п 2 – Токсичность
+  const noToxicity = NO_TOXICITY_CODES.has(c)
+    || matchesRule(c, { block: 1, section: 6 })
+    || matchesRule(c, { block: 1, section: 7, group: 1 })
+    || matchesRule(c, { block: 1, section: 7, group: 3 });
+  if (!noToxicity && ['1', '2', '3', '4'].includes(cls)) {
+    properties.push('Токсичность');
+  }
+
+  // п/п 3.1 – Взрывоопасность и пожароопасность по группам горючести
+  const flammabilityGroupRules = [
+    { block: 1, section: 4 },
+    { block: 1, section: 6 },
+    { block: 1, section: 7 },
+    { block: 1, section: 8 },
+    { block: 5, section: 3 },
+    { block: 5, section: 7 },
+    { block: 5, section: 8 },
+    { block: 5, section: 9 },
+  ];
+  if (flammabilityGroupRules.some((rule) => matchesRule(c, rule))) {
+    properties.push('Взрывоопасность и пожароопасность по группам горючести и токсичности продуктов горения');
+  }
+
+  // п/п 3.2 – Взрывоопасность и пожароопасность по температуре вспышки
+  const flammabilityTempRules = [
+    { block: 1, section: 2 },
+    { block: 5, section: 4 },
+    { block: 5, section: 5 },
+  ];
+  if (flammabilityTempRules.some((rule) => matchesRule(c, rule))) {
+    properties.push('Взрывоопасность и пожароопасность по температуре вспышки и воспламенения');
+  }
+
+  // п/п 4 – Нижний концентрационный предел распространения пламени
+  if (LOWER_FLAMMABILITY_CODES.has(c)) {
+    properties.push('Нижний концентрационный предел распространения пламени');
+  }
+
+  // п/п 5 – Инфекционность
+  if (matchesRule(c, { block: 8 })) {
+    properties.push('Инфекционность');
+  }
+
+  const result = properties.length ? properties.join(' ') : '';
   console.log('[code112] determineHazardProperties:', { code, class: cls, properties: result });
   return result;
 }
@@ -1489,7 +1564,7 @@ function formatComposition(components) {
   if (components.length === 1) {
     return `${components[0].name}`;
   }
-  return components.map((c) => c.name).join(', ');
+  return components.map((c) => c.name).join('\n');
 }
 
 function formatCompositionPercent(components) {
@@ -1497,7 +1572,7 @@ function formatCompositionPercent(components) {
   if (components.length === 1) {
     return `${components[0].percent}`;
   }
-  return components.map((c) => c.percent).join(', ');
+  return components.map((c) => c.percent).join('\n');
 }
 
 let compositionReferenceCache = null;
@@ -1585,6 +1660,21 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
   state.files.wasteFormation.status = 'in_progress';
   state.updatedAt = now;
 
+  const missingComposition = state.wastes.filter((w) => !w.composition && !updatedRef.find((r) => r.code === w.code));
+  if (missingComposition.length) {
+    state.awaitingWasteFormationComposition = {
+      queue: missingComposition.map((w) => w.code),
+      index: 0,
+    };
+    await syncCode112ProjectPages(project, state, docsPath, now, {
+      activateDocumentKey: 'wasteFormation',
+      refreshWasteFormationContent: true,
+    });
+    askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
+    project.updatedAt = now;
+    return project;
+  }
+
   await syncCode112ProjectPages(project, state, docsPath, now, {
     activateDocumentKey: 'wasteFormation',
     refreshWasteFormationContent: true,
@@ -1596,6 +1686,81 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
     documentWorkOptions(state, 'wasteFormation'),
     now
   );
+  project.updatedAt = now;
+  return project;
+}
+
+function buildWasteFormationCompositionQuestion(state) {
+  const queue = state.awaitingWasteFormationComposition?.queue || [];
+  const index = state.awaitingWasteFormationComposition?.index ?? 0;
+  const code = queue[index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) return 'Укажите состав отхода в формате "Компонент: процент; Компонент: процент".';
+  return `Для отхода ${waste.code} (${waste.name || '—'}) введите состав и процентное содержание в формате "Компонент1: процент; Компонент2: процент". Пример: "Резина: 82; Металл: 18".`;
+}
+
+function parseCompositionInput(text) {
+  const parts = String(text).split(/[;\n]/).map((p) => p.trim()).filter(Boolean);
+  const components = [];
+  for (const part of parts) {
+    const match = part.match(/^(.+?):\s*([\d,\-]+)\s*%?$/);
+    if (!match) return null;
+    const name = match[1].trim();
+    const percent = String(match[2]).replace(',', '.');
+    components.push({ name, percent });
+  }
+  return components.length ? components : null;
+}
+
+async function handleWasteFormationCompositionInput(project, state, answer, docsPath, now) {
+  const comp = state.awaitingWasteFormationComposition;
+  if (!comp) return project;
+
+  const normalized = normalizeAnswer(answer);
+  const code = comp.queue[comp.index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) {
+    comp.index++;
+    if (comp.index >= comp.queue.length) {
+      state.awaitingWasteFormationComposition = null;
+      await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+      askUser(project, 'Состав всех отходов заполнен. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+    } else {
+      askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
+    }
+    project.updatedAt = now;
+    return project;
+  }
+
+  if (normalized === '−' || normalized === 'неданных' || normalized === 'нет' || answer.trim() === '−') {
+    waste.composition = '−';
+    waste.compositionPercent = '−';
+  } else {
+    const components = parseCompositionInput(answer);
+    if (!components) {
+      askUser(project, 'Не удалось разобрать состав. Используйте формат "Компонент: процент; Компонент: процент".', [], now);
+      project.updatedAt = now;
+      return project;
+    }
+    waste.composition = formatComposition(components);
+    waste.compositionPercent = formatCompositionPercent(components);
+    waste.compositionComponents = components;
+    const ref = await loadCompositionReference();
+    const idx = ref.findIndex((r) => r.code === waste.code);
+    const entry = { code: waste.code, name: waste.name, components };
+    if (idx >= 0) ref[idx] = entry; else ref.push(entry);
+    await saveCompositionReference(ref);
+  }
+
+  comp.index++;
+  if (comp.index >= comp.queue.length) {
+    state.awaitingWasteFormationComposition = null;
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+    askUser(project, 'Состав всех отходов заполнен. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
+  } else {
+    await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
+    askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
+  }
   project.updatedAt = now;
   return project;
 }
@@ -2025,7 +2190,8 @@ function sourceRows(data) {
 }
 
 function computeSiteCount(site, siteCount) {
-  if (isFilledTemplateValue(siteCount)) return siteCount;
+  const sc = siteCount != null && String(siteCount).trim() ? String(siteCount).trim() : '';
+  if (sc && !/^\[[^\]]+\]$/.test(sc)) return sc;
   const text = String(site || '').trim();
   if (!text || text === '−' || text === '-') return '[кол-во_участков]';
   if (/все\s*участки/i.test(text) || /весь\s*цех/i.test(text)) return '[кол-во_участков]';
@@ -2197,6 +2363,7 @@ function ensureGeneratorState(project, now) {
       pendingDisposalConfirmation: null,
       pendingSourcesExtraction: null,
       pendingWasteFormationExtraction: null,
+      awaitingWasteFormationComposition: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2242,6 +2409,7 @@ function ensureGeneratorState(project, now) {
     // Ensure critical fields are initialized
     project.extractedData.code112.pendingUploadDocumentSelection = project.extractedData.code112.pendingUploadDocumentSelection ?? null;
     project.extractedData.code112.pendingWasteFormationExtraction = project.extractedData.code112.pendingWasteFormationExtraction ?? null;
+    project.extractedData.code112.awaitingWasteFormationComposition = project.extractedData.code112.awaitingWasteFormationComposition ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
