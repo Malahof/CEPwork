@@ -1665,32 +1665,20 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
   state.files.wasteFormation.status = 'in_progress';
   state.updatedAt = now;
 
-  const missingComposition = state.wastes.filter((w) => !w.composition && !updatedRef.find((r) => r.code === w.code));
-  if (missingComposition.length) {
-    state.awaitingWasteFormationComposition = {
-      queue: missingComposition.map((w) => w.code),
-      index: 0,
-    };
+  console.log('[code112] applyWasteFormationFileData: saved, starting waste formation data collection');
+  const started = await ensureWasteFormationData(project, state, docsPath, now);
+  if (!started) {
     await syncCode112ProjectPages(project, state, docsPath, now, {
       activateDocumentKey: 'wasteFormation',
       refreshWasteFormationContent: true,
     });
-    askUser(project, buildWasteFormationCompositionQuestion(state), [], now);
-    project.updatedAt = now;
-    return project;
+    askUser(
+      project,
+      `Все данные для страницы "Сведения о количестве" введены. К чему теперь приступить?`,
+      documentWorkOptions(state, 'wasteFormation'),
+      now
+    );
   }
-
-  await syncCode112ProjectPages(project, state, docsPath, now, {
-    activateDocumentKey: 'wasteFormation',
-    refreshWasteFormationContent: true,
-  });
-
-  askUser(
-    project,
-    `Извлечены данные состава для ${rows.filter((r) => r.composition?.length).length} отходов. К чему теперь приступить?`,
-    documentWorkOptions(state, 'wasteFormation'),
-    now
-  );
   project.updatedAt = now;
   return project;
 }
@@ -1795,6 +1783,7 @@ async function handlePhysicalStateInput(project, state, answer, docsPath, now) {
   if (q.stage === 'confirm') {
     if (isNoAnswer(normalized)) {
       state.physicalStateConfirmed = true;
+      state.wasteFormationDataComplete = true;
       state.awaitingPhysicalState = null;
       state.wastes.forEach((w) => { w.physicalState = w.physicalState || 'твердые'; });
       await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
@@ -1839,6 +1828,7 @@ async function handlePhysicalStateInput(project, state, answer, docsPath, now) {
   }
 
   state.physicalStateConfirmed = true;
+  state.wasteFormationDataComplete = true;
   state.awaitingPhysicalState = null;
   await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
   askUser(project, 'Физическое состояние сохранено. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
@@ -1847,8 +1837,14 @@ async function handlePhysicalStateInput(project, state, answer, docsPath, now) {
 }
 
 async function ensureWasteFormationData(project, state, docsPath, now) {
+  if (state.wasteFormationDataComplete) {
+    console.log('[code112] ensureWasteFormationData: data collection already complete');
+    return false;
+  }
+
   const missingComposition = state.wastes.filter((w) => !w.composition);
   if (missingComposition.length && !state.awaitingWasteFormationComposition) {
+    console.log('[code112] ensureWasteFormationData: missing composition for', missingComposition.map((w) => w.code).join(', '));
     state.awaitingWasteFormationComposition = {
       queue: missingComposition.map((w) => w.code),
       index: 0,
@@ -1859,6 +1855,8 @@ async function ensureWasteFormationData(project, state, docsPath, now) {
   }
 
   if (!state.physicalStateConfirmed && !state.awaitingPhysicalState) {
+    console.log('[code112] ensureWasteFormationData: requesting physical state confirmation');
+    state.wastes.forEach((w) => { w.physicalState = w.physicalState || 'твердые'; });
     state.awaitingPhysicalState = { stage: 'confirm' };
     await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
     askUser(project, buildPhysicalStateQuestion(state), confirmationOptions(), now);
@@ -2469,6 +2467,7 @@ function ensureGeneratorState(project, now) {
       awaitingWasteFormationComposition: null,
       awaitingPhysicalState: null,
       physicalStateConfirmed: false,
+      wasteFormationDataComplete: false,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2517,6 +2516,7 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.awaitingWasteFormationComposition = project.extractedData.code112.awaitingWasteFormationComposition ?? null;
     project.extractedData.code112.awaitingPhysicalState = project.extractedData.code112.awaitingPhysicalState ?? null;
     project.extractedData.code112.physicalStateConfirmed = project.extractedData.code112.physicalStateConfirmed ?? false;
+    project.extractedData.code112.wasteFormationDataComplete = project.extractedData.code112.wasteFormationDataComplete ?? project.extractedData.code112.physicalStateConfirmed ?? false;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
