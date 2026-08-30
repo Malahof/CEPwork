@@ -240,7 +240,7 @@ export async function generate(projectData, userSources = {}) {
       projectData.updatedAt = now;
       return projectData;
     }
-    if (!['appendix', 'sources', 'wasteFormation'].includes(selected.key)) {
+    if (!['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures'].includes(selected.key)) {
       state.pendingUploadDocumentSelection = null;
       askUser(projectData, `Загрузка файла для «${selected.label}» пока не поддерживается. К чему теперь приступить?`, menuOptions(), now);
       projectData.updatedAt = now;
@@ -262,6 +262,28 @@ export async function generate(projectData, userSources = {}) {
       return projectData;
     }
     return processPendingWasteExtraction(projectData, state, mode, now, userSources);
+  }
+
+  if (state.awaitingTitleData) {
+    return handleTitleDataInput(projectData, state, answer, docsPath, now);
+  }
+
+  if (state.pendingFinalGeneration) {
+    const normalized = normalizeAnswer(answer);
+    if (isYesAnswer(normalized)) {
+      state.pendingFinalGeneration = null;
+      return performFinalGenerationAndArchive(projectData, state, userSources, outputDir, docsPath, now);
+    }
+    if (isNoAnswer(normalized) || normalizeAnswer(answer) === 'pause') {
+      state.pendingFinalGeneration = null;
+      state.pausedAt = now;
+      askUser(projectData, 'Работа по акту инвентаризации сохранена. К чему теперь приступить?', menuOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    askUser(projectData, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    projectData.updatedAt = now;
+    return projectData;
   }
 
   if (state.pendingWasteFormationExtraction) {
@@ -399,13 +421,9 @@ export async function generate(projectData, userSources = {}) {
       projectData.updatedAt = now;
       return projectData;
     }
-    await generateDocuments(projectData, state, code112Documents, outputDir, docsPath, now);
-    askUser(
-      projectData,
-      'Все 5 документов по акту инвентаризации сформированы. Если хотите сохранить данные как кейс, отправьте команду «Запомни организацию: [название], директор [ФИО], адрес [адрес]». К чему теперь приступить?',
-      menuOptions(),
-      now
-    );
+    state.pendingFinalGeneration = { outputDir, docsPath };
+    askUser(projectData, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    projectData.updatedAt = now;
     return projectData;
   }
 
@@ -461,6 +479,12 @@ export function getCode112Question(project) {
   if (state.pendingSourcesExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.awaitingSourceQuantities) return buildSourceQuantityQuestion(state);
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
+  if (state.awaitingTitleData) {
+    const q = state.awaitingTitleData?.missing[state.awaitingTitleData.index];
+    if (state.awaitingTitleData?.pendingMore) return 'Хотите добавить еще одного члена комиссии?';
+    return q?.question ?? 'Укажите данные для титула акта.';
+  }
+  if (state.pendingFinalGeneration) return 'Все данные внесены. Хотите сгенерировать DOCX?';
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
     if (pendingWaste) return buildDisposalConfirmationQuestion(pendingWaste);
@@ -474,6 +498,7 @@ export function getCode112Question(project) {
 
 function uploadDocumentSelectionOptions() {
   return [
+    { key: 'titleAct', label: 'Титул акта' },
     { key: 'appendix', label: 'Приложение к акту' },
     { key: 'sources', label: 'Источники образования' },
     { key: 'wasteFormation', label: 'Сведения о количестве' },
@@ -506,6 +531,8 @@ export function getCode112Options(project) {
     return state.awaitingNormatives.needsInput ? [] : confirmationOptions();
   }
   if (state.pendingWasteFormationExtraction) return confirmationOptions();
+  if (state.awaitingTitleData) return [];
+  if (state.pendingFinalGeneration) return confirmationOptions();
   if (state.awaitingOrganizationName) return [];
   if (state.activeDocument) return documentWorkOptions(state, state.activeDocument);
   return menuOptions();
@@ -542,6 +569,23 @@ function isWasteFormationUpload(upload) {
     || text.includes('компонент');
 }
 
+function isTitleUpload(upload) {
+  const text = String(upload.text ?? '').toLowerCase();
+  return text.includes('руководитель:')
+    || text.includes('председатель:')
+    || text.includes('члены:')
+    || text.includes('юридический адрес:')
+    || text.includes('инвентаризация:');
+}
+
+function isMeasuresUpload(upload) {
+  const fileName = String(upload.fileName ?? '').toLowerCase();
+  const text = String(upload.text ?? '').toLowerCase();
+  return fileName.includes('мероприят')
+    || text.includes('перечень мероприятий')
+    || text.includes('мероприятия');
+}
+
 export async function registerCode112Upload(project, upload, options = {}) {
   if (project.packageCode !== '112' && !project.extractedData?.code112) return null;
 
@@ -557,6 +601,8 @@ export async function registerCode112Upload(project, upload, options = {}) {
   if (isWasteFormationUpload(upload)) detected = 'wasteFormation';
   else if (isSourcesUpload(upload)) detected = 'sources';
   else if (isAppendixUpload(upload)) detected = 'appendix';
+  else if (isTitleUpload(upload)) detected = 'titleAct';
+  else if (isMeasuresUpload(upload)) detected = 'measures';
   console.log('[code112] registerCode112Upload: detected type:', detected);
 
   const bufferBase64 = options.buffer ? options.buffer.toString('base64') : null;
@@ -1605,6 +1651,254 @@ async function saveCompositionReference(data) {
   await writeFile(COMPOSITION_PATH, JSON.stringify(data, null, 2), 'utf8');
 }
 
+function parseMemberLine(line) {
+  const text = String(line).trim();
+  if (!text) return { position: 'Должность', name: 'И.О. Фамилия' };
+  // Match "Position I.O. Surname" (initials with dot, possibly space)
+  const match = text.match(/^(.*?)\s+([А-ЯЁ]\.\s*[А-ЯЁ]?\.?\s*\S+)$/);
+  if (match) {
+    return { position: match[1].trim(), name: match[2].trim() };
+  }
+  return { position: text, name: 'И.О. Фамилия' };
+}
+
+function parseTitleData(text) {
+  const raw = String(text ?? '');
+  const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const data = {
+    manager: null,
+    chair: null,
+    members: [],
+    legalAddress: null,
+    startDate: null,
+    endDate: null,
+  };
+
+  let inMembers = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lower = line.toLowerCase();
+
+    if (lower.startsWith('руководитель:')) {
+      data.manager = parseMemberLine(line.replace(/^руководитель:/i, ''));
+      inMembers = false;
+      continue;
+    }
+    if (lower.startsWith('председатель:')) {
+      data.chair = parseMemberLine(line.replace(/^председатель:/i, ''));
+      inMembers = false;
+      continue;
+    }
+    if (lower.startsWith('члены:')) {
+      inMembers = true;
+      const after = line.replace(/^члены:/i, '').trim();
+      if (after) {
+        const parts = after.split(/[;\n]/).map((s) => s.trim()).filter(Boolean);
+        for (const part of parts) {
+          data.members.push(parseMemberLine(part));
+        }
+      }
+      continue;
+    }
+    if (lower.startsWith('юридический адрес:')) {
+      data.legalAddress = line.replace(/^юридический адрес:/i, '').trim();
+      inMembers = false;
+      continue;
+    }
+    if (lower.startsWith('инвентаризация:')) {
+      const rangeText = line.replace(/^инвентаризация:/i, '').trim();
+      const dates = rangeText.match(/\d{2}\.\d{2}\.\d{4}/g);
+      if (dates && dates.length >= 2) {
+        data.startDate = dates[0];
+        data.endDate = dates[1];
+      } else if (dates && dates.length === 1) {
+        data.endDate = dates[0];
+      }
+      inMembers = false;
+      continue;
+    }
+
+    if (inMembers) {
+      data.members.push(parseMemberLine(line));
+    }
+  }
+
+  return data;
+}
+
+function applyTitleDataToState(state, data) {
+  if (data.manager) {
+    state.data.Должность_руководителя = data.manager.position;
+    state.data.Инициалы_фамилия_руководителя = data.manager.name;
+  }
+  if (data.chair) {
+    state.data.Должность_председателя = data.chair.position;
+    state.data.Инициалы_фамилия_председателя = data.chair.name;
+  }
+  if (data.legalAddress) state.data.Юридический_адрес = data.legalAddress;
+  if (data.startDate) state.data.Дата_начала = data.startDate;
+  if (data.endDate) state.data.Дата_акта = data.endDate;
+  if (data.members.length) {
+    state.data.Комиссия = data.members.map((m) => `${m.position} - ${m.name}`).join('\n');
+  }
+}
+
+function missingTitleDataFields(state) {
+  const fields = [
+    { key: 'manager', question: 'Укажите должность и инициалы с фамилией руководителя (например, Директор Д.В. Финевич).' },
+    { key: 'legalAddress', question: 'Укажите юридический адрес организации.' },
+    { key: 'startDate', question: 'Укажите дату начала инвентаризации в формате ДД.ММ.ГГГГ.' },
+    { key: 'endDate', question: 'Укажите дату окончания инвентаризации в формате ДД.ММ.ГГГГ.' },
+    { key: 'chair', question: 'Укажите должность и инициалы с фамилией председателя комиссии.' },
+    { key: 'member0', question: 'Укажите должность и инициалы с фамилией первого члена комиссии.' },
+    { key: 'member1', question: 'Укажите должность и инициалы с фамилией второго члена комиссии.' },
+  ];
+  const missing = [];
+  for (const f of fields) {
+    if (f.key === 'manager' && (!state.data.Должность_руководителя || !state.data.Инициалы_фамилия_руководителя)) missing.push(f);
+    else if (f.key === 'legalAddress' && !state.data.Юридический_адрес) missing.push(f);
+    else if (f.key === 'startDate' && !state.data.Дата_начала) missing.push(f);
+    else if (f.key === 'endDate' && !state.data.Дата_акта) missing.push(f);
+    else if (f.key === 'chair' && (!state.data.Должность_председателя || !state.data.Инициалы_фамилия_председателя)) missing.push(f);
+    else if (f.key.startsWith('member')) {
+      const members = resolveCommissionData(state.data).members;
+      const index = Number(f.key.replace('member', ''));
+      if (!members[index]) missing.push(f);
+    }
+  }
+  return missing;
+}
+
+async function ensureTitleData(project, state, docsPath, now) {
+  if (state.titleDataComplete) {
+    console.log('[code112] ensureTitleData: title data already complete');
+    return false;
+  }
+  if (!state.awaitingTitleData) {
+    const missing = missingTitleDataFields(state);
+    if (missing.length === 0) {
+      state.titleDataComplete = true;
+      console.log('[code112] ensureTitleData: all fields already present');
+      return false;
+    }
+    state.awaitingTitleData = { missing, index: 0, pendingMore: false };
+  }
+
+  const q = state.awaitingTitleData.missing[state.awaitingTitleData.index];
+  if (state.awaitingTitleData.pendingMore) {
+    askUser(project, 'Хотите добавить еще одного члена комиссии?', confirmationOptions(), now);
+  } else if (q) {
+    await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true });
+    askUser(project, q.question, [], now);
+  } else {
+    // members done, ask for more
+    state.awaitingTitleData.pendingMore = true;
+    askUser(project, 'Хотите добавить еще одного члена комиссии?', confirmationOptions(), now);
+  }
+  project.updatedAt = now;
+  state.updatedAt = now;
+  return true;
+}
+
+async function applyTitleDataFromUpload(project, state, uploadIndex, docsPath, now, documentKey) {
+  const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
+  const upload = uploads[uploadIndex];
+  if (!upload) {
+    askUser(project, 'Файл для титула не найден. Загрузите файл снова.', documentWorkOptions(state, documentKey), now);
+    project.updatedAt = now;
+    return project;
+  }
+
+  console.log('[code112] applyTitleDataFromUpload: parsing', upload.fileName);
+  const data = parseTitleData(upload.text ?? '');
+  applyTitleDataToState(state, data);
+  state.files[documentKey].filledFromFile = true;
+  state.files[documentKey].status = 'in_progress';
+  state.titleDataComplete = false;
+  state.updatedAt = now;
+
+  const started = await ensureTitleData(project, state, docsPath, now);
+  if (!started) {
+    await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true, activateDocumentKey: 'titleAct' });
+    askUser(project, `Данные титула из файла «${upload.fileName}» применены. К чему теперь приступить?`, menuOptions(), now);
+  }
+  project.updatedAt = now;
+  return project;
+}
+
+async function handleTitleDataInput(project, state, answer, docsPath, now) {
+  const q = state.awaitingTitleData?.missing[state.awaitingTitleData.index];
+  if (!q && !state.awaitingTitleData?.pendingMore) return project;
+
+  if (state.awaitingTitleData.pendingMore) {
+    const normalized = normalizeAnswer(answer);
+    if (isYesAnswer(normalized)) {
+      const members = resolveCommissionData(state.data).members;
+      state.awaitingTitleData.index = state.awaitingTitleData.missing.length;
+      state.awaitingTitleData.missing.push({
+        key: `member${members.length}`,
+        question: `Укажите должность и инициалы с фамилией ${members.length + 1}-го члена комиссии.`,
+      });
+      state.awaitingTitleData.pendingMore = false;
+      await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true });
+      askUser(project, `Укажите должность и инициалы с фамилией ${members.length + 1}-го члена комиссии.`, [], now);
+    } else if (isNoAnswer(normalized)) {
+      state.awaitingTitleData = null;
+      state.titleDataComplete = true;
+      await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true, activateDocumentKey: 'titleAct' });
+      askUser(project, 'Данные титула сохранены. К чему теперь приступить?', menuOptions(), now);
+    } else {
+      askUser(project, 'Хотите добавить еще одного члена комиссии?', confirmationOptions(), now);
+    }
+    project.updatedAt = now;
+    state.updatedAt = now;
+    return project;
+  }
+
+  if (q.key === 'manager' || q.key === 'chair') {
+    const member = parseMemberLine(answer);
+    if (q.key === 'manager') {
+      state.data.Должность_руководителя = member.position;
+      state.data.Инициалы_фамилия_руководителя = member.name;
+    } else {
+      state.data.Должность_председателя = member.position;
+      state.data.Инициалы_фамилия_председателя = member.name;
+    }
+  } else if (q.key === 'legalAddress') {
+    state.data.Юридический_адрес = answer.trim();
+  } else if (q.key === 'startDate' || q.key === 'endDate') {
+    const dateText = answer.trim().match(/\d{2}\.\d{2}\.\d{4}/)?.[0] ?? answer.trim();
+    if (q.key === 'startDate') state.data.Дата_начала = dateText;
+    if (q.key === 'endDate') state.data.Дата_акта = dateText;
+  } else if (q.key.startsWith('member')) {
+    const member = parseMemberLine(answer);
+    const current = resolveCommissionData(state.data);
+    const existingMembers = current.members;
+    const index = Number(q.key.replace('member', ''));
+    if (existingMembers[index]) {
+      existingMembers[index] = member;
+    } else {
+      existingMembers.push(member);
+    }
+    state.data.Комиссия = existingMembers.map((m) => `${m.position} - ${m.name}`).join('\n');
+  }
+
+  state.awaitingTitleData.index++;
+  const next = state.awaitingTitleData.missing[state.awaitingTitleData.index];
+  if (next) {
+    await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true });
+    askUser(project, next.question, [], now);
+  } else {
+    // All base members entered, ask if more
+    state.awaitingTitleData.pendingMore = true;
+    await syncCode112ProjectPages(project, state, docsPath, now, { refreshAllPages: true });
+    askUser(project, 'Хотите добавить еще одного члена комиссии?', confirmationOptions(), now);
+  }
+  project.updatedAt = now;
+  state.updatedAt = now;
+  return project;
+}
+
 async function applyWasteFormationFileData(project, state, uploadIndex, docsPath, now, bufferOverride = null) {
   const uploads = Array.isArray(project.extractedData?.uploads) ? project.extractedData.uploads : [];
   const upload = uploads[uploadIndex];
@@ -2468,6 +2762,9 @@ function ensureGeneratorState(project, now) {
       awaitingPhysicalState: null,
       physicalStateConfirmed: false,
       wasteFormationDataComplete: false,
+      awaitingTitleData: null,
+      titleDataComplete: false,
+      pendingFinalGeneration: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2517,6 +2814,9 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.awaitingPhysicalState = project.extractedData.code112.awaitingPhysicalState ?? null;
     project.extractedData.code112.physicalStateConfirmed = project.extractedData.code112.physicalStateConfirmed ?? false;
     project.extractedData.code112.wasteFormationDataComplete = project.extractedData.code112.wasteFormationDataComplete ?? project.extractedData.code112.physicalStateConfirmed ?? false;
+    project.extractedData.code112.awaitingTitleData = project.extractedData.code112.awaitingTitleData ?? null;
+    project.extractedData.code112.titleDataComplete = project.extractedData.code112.titleDataComplete ?? false;
+    project.extractedData.code112.pendingFinalGeneration = project.extractedData.code112.pendingFinalGeneration ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
@@ -2634,8 +2934,18 @@ function detectFileDocumentType(upload) {
     return 'measures';
   }
 
-  if (fileName.includes('титул') || fileName.includes('акт')) {
+  if (fileName.includes('титул')
+    || fileName.includes('акт')
+    || text.includes('руководитель:')
+    || text.includes('председатель:')
+    || text.includes('члены:')
+    || text.includes('юридический адрес:')
+    || text.includes('инвентаризация:')) {
     return 'titleAct';
+  }
+
+  if (fileName.includes('мероприят') || text.includes('мероприятия') || text.includes('перечень мероприятий')) {
+    return 'measures';
   }
 
   if (text.match(/\b\d{7}\b/)) return 'appendix';
@@ -2693,6 +3003,10 @@ async function handleUseUploadedFile(project, state, document, docsPath, now) {
     return applyWasteFormationFileData(project, state, uploads.length - 1, docsPath, now);
   }
 
+  if (document.key === 'titleAct' || document.key === 'measures') {
+    return applyTitleDataFromUpload(project, state, uploads.length - 1, docsPath, now, document.key);
+  }
+
   askUser(
     project,
     `Заполнение файла «${document.label}» из загруженного файла пока не поддерживается.`,
@@ -2725,8 +3039,9 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
       return project;
     }
     state.activeDocument = null;
-    await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
-    askUser(project, 'Все 5 документов по акту инвентаризации сформированы. К чему теперь приступить?', menuOptions(), now);
+    state.pendingFinalGeneration = { outputDir, docsPath };
+    askUser(project, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    project.updatedAt = now;
     return project;
   }
 
@@ -2769,6 +3084,18 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
 
   if (document.key === 'wasteFormation') {
     const started = await ensureWasteFormationData(project, state, docsPath, now);
+    if (started) {
+      project.updatedAt = now;
+      return project;
+    }
+  }
+
+  if ((document.key === 'titleAct' || document.key === 'measures') && state.awaitingTitleData) {
+    return handleTitleDataInput(project, state, answer, docsPath, now);
+  }
+
+  if (document.key === 'titleAct' || document.key === 'measures') {
+    const started = await ensureTitleData(project, state, docsPath, now);
     if (started) {
       project.updatedAt = now;
       return project;
@@ -3819,6 +4146,67 @@ function buildGeneratedFilesMessage(documents, state) {
     return `• ${document.label}: [скачать DOCX](${file.downloadUrl})`;
   });
   return ['Готово. Сформированы файлы:', ...links].join('\n');
+}
+
+async function archiveProjectInEcoProjects(projectsPath, projectId) {
+  try {
+    const raw = await readFile(projectsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.projects)) {
+      const index = parsed.projects.findIndex((p) => p.id === projectId);
+      if (index >= 0) {
+        parsed.projects[index].status = 'completed';
+        parsed.projects[index].archivedAt = Date.now();
+      }
+      const tmpPath = `${projectsPath}.tmp`;
+      await writeFile(tmpPath, `${JSON.stringify(parsed, null, 2)}\n`);
+      await rename(tmpPath, projectsPath);
+    }
+  } catch (error) {
+    console.warn('[code112] archiveProjectInEcoProjects failed', error.message);
+  }
+}
+
+async function archiveProjectInDocs(project, state, docsPath, now) {
+  const snapshot = await readDocsSnapshot(docsPath);
+  const projectFolderId = `agent-${project.id}`;
+  const year = new Date(now).getFullYear();
+  const organizationName = state.data.Название_организации || projectFolderTitle(project, state, buildTemplateData(project, state)) || 'Новый проект';
+
+  const archiveRootId = 'archive';
+  const archiveWasteId = 'archive-otkhody';
+  const archiveDevId = 'archive-otkhody-razrabotka';
+  const archiveYearId = `archive-otkhody-razrabotka-${year}`;
+  const archiveProjectId = `archive-otkhody-razrabotka-${year}-${slugify(organizationName)}-${project.id}`;
+
+  ensureFolder(snapshot, { id: archiveRootId, title: 'Архив', parentId: null, order: 100 });
+  ensureFolder(snapshot, { id: archiveWasteId, title: 'Отходы', parentId: archiveRootId, order: 0 });
+  ensureFolder(snapshot, { id: archiveDevId, title: 'Разработка', parentId: archiveWasteId, order: 0 });
+  ensureFolder(snapshot, { id: archiveYearId, title: String(year), parentId: archiveDevId, order: 0 });
+  ensureFolder(snapshot, { id: archiveProjectId, title: organizationName, parentId: archiveYearId, order: 0 });
+
+  const projectFolderIndex = snapshot.folders.findIndex((f) => f.id === projectFolderId);
+  if (projectFolderIndex >= 0) {
+    snapshot.folders[projectFolderIndex].parentId = archiveProjectId;
+  }
+
+  if (snapshot.activePageId && snapshot.activePageId.startsWith(`agent-${project.id}-code112`)) {
+    snapshot.activePageId = null;
+  }
+
+  await writeDocsSnapshot(docsPath, snapshot);
+  console.log('[code112] Project archived to', archiveProjectId);
+}
+
+async function performFinalGenerationAndArchive(project, state, userSources, outputDir, docsPath, now) {
+  await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
+  await archiveProjectInDocs(project, state, docsPath, now);
+  const agentProjectsPath = userSources.agentProjectsPath ?? path.join(path.dirname(docsPath), 'eco_projects.json');
+  await archiveProjectInEcoProjects(agentProjectsPath, project.id);
+  state.status = 'completed';
+  askUser(project, 'Документы сгенерированы и помещены в архив. Работа завершена.', [], now);
+  project.updatedAt = now;
+  return project;
 }
 
 export async function syncCode112ProjectPages(project, state, docsPath, now, options = {}) {

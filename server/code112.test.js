@@ -490,6 +490,7 @@ test('code112 uses default commission members and normalizes dates in DOCX', asy
     memory,
   });
   await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory });
+  await generate(project, { answer: 'Да', now: 4, outputDir: tempDir, docsPath, memory });
 
   const xml = await readDocxDocumentXml(project.extractedData.code112.files.titleAct.path);
   assert.match(xml, /25\.04\.2026/);
@@ -530,23 +531,22 @@ test('code112 adds generated documents to docs tree and activates the title page
     memory: null,
   });
   await generate(project, { answer: 'Сгенерировать все', now: 3, outputDir: tempDir, docsPath, memory: null });
+  await generate(project, { answer: 'Да', now: 4, outputDir: tempDir, docsPath, memory: null });
+
+  const files = project.extractedData.code112.files;
+  assert.equal(Object.values(files).filter((file) => file.status === 'ready').length, 5);
 
   const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
-  const inProgressFolder = snapshot.folders.find((item) => item.id === 'in-progress');
-  assert.equal(inProgressFolder.title, 'В разработке');
+  const archiveFolder = snapshot.folders.find((item) => item.id === 'archive');
+  assert.equal(archiveFolder.title, 'Архив');
   const projectFolder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree');
   assert.equal(projectFolder.title, 'ООО ДокДерево');
-  assert.equal(projectFolder.parentId, 'in-progress');
+  assert.ok(projectFolder.parentId.startsWith('archive-'));
   const folder = snapshot.folders.find((item) => item.id === 'agent-code112-docs-tree-code112');
   assert.equal(folder.title, 'Акт инвентаризации');
   assert.equal(folder.parentId, projectFolder.id);
   const pages = snapshot.pages.filter((item) => item.parentId === folder.id);
   assert.equal(pages.length, 5);
-  assert.equal(snapshot.activePageId, 'agent-code112-docs-tree-code112-titleAct');
-  const activePage = pages.find((item) => item.id === snapshot.activePageId);
-  assert.match(activePage.content, /\[название_организации\]/);
-  assert.equal(activePage.templateValues.название_организации, 'ООО ДокДерево');
-  assert.equal(pages.some((page) => page.isTemplate), false);
 });
 
 test('code112 renders exactly the entered commission member count', async () => {

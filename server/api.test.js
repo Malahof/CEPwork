@@ -404,10 +404,13 @@ test('код 112 starts the inventory act generator and creates five DOCX files'
   assert.match(withOrganization.history.at(-1).text, /С чего хотите начать/);
 
   const generated = await selectAgentOption(started.id, 'generateAll');
-  const files = generated.extractedData.code112.files;
-  assert.equal(generated.extractedData.code112.status, 'ready');
+  assert.match(generated.question, /Хотите сгенерировать DOCX/);
+
+  const confirmed = await selectAgentOption(started.id, 'Да');
+  const files = confirmed.extractedData.code112.files;
+  assert.equal(confirmed.extractedData.code112.status, 'completed');
   assert.equal(Object.values(files).filter((file) => file.status === 'ready').length, 5);
-  assert.match(generated.history.at(-2).text, /Сформированы файлы/);
+  assert.match(confirmed.history.at(-2).text, /Сформированы файлы/);
 
   const firstFile = files.titleAct;
   const downloadResponse = await fetch(`${baseUrl}${firstFile.downloadUrl}`);
