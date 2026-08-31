@@ -286,6 +286,28 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
+  if (state.pendingTitleExtraction) {
+    const normalized = normalizeAnswer(answer);
+    const { uploadIndex, bufferBase64 } = state.pendingTitleExtraction;
+    if (isYesAnswer(normalized)) {
+      state.pendingTitleExtraction = null;
+      const buffer = bufferBase64 ? Buffer.from(bufferBase64, 'base64') : null;
+      if (buffer) {
+        const upload = projectData.extractedData.uploads[uploadIndex] ?? projectData.extractedData.uploads.at(-1);
+        const fileType = String(upload?.fileName ?? '').toLowerCase();
+        const data = await extractTitleDataFromFile(buffer, fileType);
+        state.titleData = data;
+        applyTitleDataToState(state, data);
+      }
+      return applyTitleDataFromUpload(projectData, state, uploadIndex, docsPath, now, 'titleAct');
+    }
+    state.pendingTitleExtraction = null;
+    state.activeDocument = 'titleAct';
+    askUser(projectData, 'Заполнение титула из файла отменено. К чему теперь приступить?', documentWorkOptions(state, 'titleAct'), now);
+    projectData.updatedAt = now;
+    return projectData;
+  }
+
   if (state.pendingWasteFormationExtraction) {
     const normalized = normalizeAnswer(answer);
     const { uploadIndex, bufferBase64 } = state.pendingWasteFormationExtraction;
@@ -479,6 +501,7 @@ export function getCode112Question(project) {
   if (state.pendingSourcesExtraction) return 'Какие данные извлечь из загруженного файла?';
   if (state.awaitingSourceQuantities) return buildSourceQuantityQuestion(state);
   if (state.pendingWasteExtraction) return 'Какие данные извлечь из загруженного файла?';
+  if (state.pendingTitleExtraction) return 'Заполнить данные титула акта из загруженного файла?';
   if (state.awaitingTitleData) {
     const q = state.awaitingTitleData?.missing[state.awaitingTitleData.index];
     if (state.awaitingTitleData?.pendingMore) return 'Хотите добавить еще одного члена комиссии?';
@@ -530,6 +553,7 @@ export function getCode112Options(project) {
   if (state.awaitingNormatives) {
     return state.awaitingNormatives.needsInput ? [] : confirmationOptions();
   }
+  if (state.pendingTitleExtraction) return confirmationOptions();
   if (state.pendingWasteFormationExtraction) return confirmationOptions();
   if (state.awaitingTitleData) return [];
   if (state.pendingFinalGeneration) return confirmationOptions();
@@ -700,6 +724,24 @@ export async function registerCode112Upload(project, upload, options = {}) {
     );
     askUser(project, 'Заполнить состав отходов из загруженного файла? (Если данные в справочнике отличаются, будет задан вопрос.)', confirmationOptions(), now);
     return state.pendingWasteFormationExtraction;
+  }
+
+  if (state.activeDocument === 'titleAct' || state.activeDocument === 'measures' || detected === 'titleAct' || detected === 'measures') {
+    console.log('[code112] registerCode112Upload: detected title data file, asking for confirmation');
+    state.activeDocument = 'titleAct';
+    state.files.titleAct.status = 'in_progress';
+    state.pendingTitleExtraction = {
+      uploadIndex,
+      fileName: upload.fileName,
+      text: upload.text ?? '',
+      bufferBase64,
+      createdAt: now,
+    };
+    state.updatedAt = now;
+    project.updatedAt = now;
+    addAgentMessage(project, `Файл «${upload.fileName}» похож на данные для титула. Заполнить титул из файла?`, now);
+    askUser(project, 'Заполнить данные титула акта из загруженного файла?', confirmationOptions(), now);
+    return state.pendingTitleExtraction;
   }
 
   console.log('[code112] registerCode112Upload: using standard waste extraction for appendix/waste list');
@@ -1662,7 +1704,7 @@ function parseMemberLine(line) {
   return { position: text, name: 'И.О. Фамилия' };
 }
 
-function parseTitleData(text) {
+function extractTitleDataFromText(text) {
   const raw = String(text ?? '');
   const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const data = {
@@ -1725,6 +1767,30 @@ function parseTitleData(text) {
 
   return data;
 }
+
+async function extractTitleDataFromFile(buffer, fileType) {
+  let text = '';
+  const type = String(fileType ?? '').toLowerCase();
+  if (type.includes('docx')) {
+    const { value } = await mammoth.extractRawText({ buffer });
+    text = value;
+  } else if (type.includes('pdf')) {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      text = result.text ?? '';
+    } finally {
+      await parser.destroy();
+    }
+  } else if (Buffer.isBuffer(buffer)) {
+    text = buffer.toString('utf8');
+  } else {
+    text = String(buffer ?? '');
+  }
+  return extractTitleDataFromText(text);
+}
+
+const parseTitleData = extractTitleDataFromText;
 
 function applyTitleDataToState(state, data) {
   if (data.manager) {
@@ -1810,7 +1876,8 @@ async function applyTitleDataFromUpload(project, state, uploadIndex, docsPath, n
   }
 
   console.log('[code112] applyTitleDataFromUpload: parsing', upload.fileName);
-  const data = parseTitleData(upload.text ?? '');
+  const data = extractTitleDataFromText(upload.text ?? '');
+  state.titleData = data;
   applyTitleDataToState(state, data);
   state.files[documentKey].filledFromFile = true;
   state.files[documentKey].status = 'in_progress';
@@ -2764,7 +2831,9 @@ function ensureGeneratorState(project, now) {
       wasteFormationDataComplete: false,
       awaitingTitleData: null,
       titleDataComplete: false,
+      pendingTitleExtraction: null,
       pendingFinalGeneration: null,
+      titleData: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
       awaitingNormatives: null,
@@ -2816,7 +2885,9 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.wasteFormationDataComplete = project.extractedData.code112.wasteFormationDataComplete ?? project.extractedData.code112.physicalStateConfirmed ?? false;
     project.extractedData.code112.awaitingTitleData = project.extractedData.code112.awaitingTitleData ?? null;
     project.extractedData.code112.titleDataComplete = project.extractedData.code112.titleDataComplete ?? false;
+    project.extractedData.code112.pendingTitleExtraction = project.extractedData.code112.pendingTitleExtraction ?? null;
     project.extractedData.code112.pendingFinalGeneration = project.extractedData.code112.pendingFinalGeneration ?? null;
+    project.extractedData.code112.titleData = project.extractedData.code112.titleData ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
     project.extractedData.code112.updatedAt = Number.isFinite(project.extractedData.code112.updatedAt) ? project.extractedData.code112.updatedAt : now;
