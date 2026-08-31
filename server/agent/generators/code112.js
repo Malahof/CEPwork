@@ -4364,7 +4364,7 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
       console.warn('[code112] syncCode112ProjectPages: error finding existing page', document.key, e.message);
     }
     
-    const refreshedContent = refreshedProjectPageContent(document, data, options);
+    const refreshedContent = await refreshedProjectPageContent(document, data, options);
     const templateContent = buildEditableTemplatePageContent(document);
     const file = state.files && state.files[document.key] ? state.files[document.key] : null;
     
@@ -4414,13 +4414,17 @@ export async function syncCode112ProjectPages(project, state, docsPath, now, opt
   });
 }
 
-function refreshedProjectPageContent(document, data, options) {
+async function refreshedProjectPageContent(document, data, options) {
   if (options.refreshAllPages) {
+    if (document.key === 'titleAct') return buildTitleProjectPageContent(data);
     if (document.key === 'appendix') return buildAppendixProjectPageContent(data);
     if (document.key === 'sources') return buildSourcesProjectPageContent(data);
     if (document.key === 'wasteFormation') return buildWasteFormationProjectPageContent(data);
+    if (document.key === 'measures') return buildMeasuresProjectPageContent(data);
     return null;
   }
+  if (document.key === 'titleAct') return buildTitleProjectPageContent(data);
+  if (document.key === 'measures') return buildMeasuresProjectPageContent(data);
   if (options.refreshAppendixContent && document.key === 'appendix') return buildAppendixProjectPageContent(data);
   if (options.refreshSourcesContent && document.key === 'sources') return buildSourcesProjectPageContent(data);
   if (options.refreshWasteFormationContent && document.key === 'wasteFormation') return buildWasteFormationProjectPageContent(data);
@@ -4642,6 +4646,75 @@ function buildWasteFormationProjectPageContent(data) {
 |---|---|---|---|---|---|---|---|---|---|---|---|
 ${rows.join('\n') || '| [код] | [отход] | [источник] | [кол-во_участков] | [количество_т_шт] | [количество] | [норматив] | [физ_сост] | [состав] | [состав_%] | [свойства] | [класс] |'}
 `;
+}
+
+let measuresTemplateTextCache = null;
+
+async function getMeasuresTemplateText() {
+  if (measuresTemplateTextCache) return measuresTemplateTextCache;
+  try {
+    const buffer = await readFile(path.join(TEMPLATE_DIR, 'measures_template.docx'));
+    const { value } = await mammoth.extractRawText({ buffer });
+    measuresTemplateTextCache = value;
+    return value;
+  } catch (error) {
+    console.warn('[code112] Failed to load measures template text', error.message);
+    measuresTemplateTextCache = '';
+    return '';
+  }
+}
+
+function buildTitleProjectPageContent(data) {
+  console.log('[code112] Building title page content');
+  const commissionRows = data.commission.length
+    ? data.commission.map((member) => `| ${escapeMarkdownTableCell(member.position)} | ${escapeMarkdownTableCell(member.name)} | ${escapeMarkdownTableCell(data.actDate)} |`).join('\n')
+    : '| [должность_члена_комиссии] | [инициалы_фамилия_члена_комиссии] | [дата_акта] |';
+
+  return `| УТВЕРЖДАЮ |
+|---|
+| [должность_руководителя] |
+| [название_организации] |
+| [инициалы_фамилия_руководителя] |
+| «____»________________ 2026 г. |
+
+# АКТ инвентаризации отходов производства
+
+от [дата_акта]
+
+**[название_организации]**
+
+(наименование юридического лица, фамилия, собственное имя, отчество (если таковое имеется) индивидуального предпринимателя)
+
+**[юридический_адрес]**
+
+(место нахождения (место жительства) юридического лица (индивидуального предпринимателя))
+
+> Данный акт подтверждает, что инвентаризация отходов производства, проводимая в (у) **[название_организации]** в сроки с **[дата_начала]** по **[дата_акта]**, содержит достоверные сведения об источниках образования отходов производства, о количестве образующихся отходов производства, об их качественных и количественных показателях, о местах возникновения и размещения отходов производства.
+
+**Председатель комиссии:**
+
+| [должность_председателя] | [инициалы_фамилия_председателя] | [дата_акта] |
+|---|---|---|
+| (должность служащего) | (подпись) | (инициалы, фамилия) |
+
+**Члены комиссии:**
+
+| (должность служащего) | (подпись) | (инициалы, фамилия) |
+|---|---|---|
+${commissionRows}
+`;
+}
+
+async function buildMeasuresProjectPageContent(data) {
+  console.log('[code112] Building measures page content');
+  let templateText = await getMeasuresTemplateText();
+  if (!templateText) {
+    templateText = 'Перечень мероприятий\n\n[должность_председателя]\n[инициалы_фамилия_председателя]';
+  }
+  const text = templateText
+    .replace(/\[должность_председателя\]/g, data.chairPosition || '[должность_председателя]')
+    .replace(/\[инициалы_фамилия_председателя\]/g, data.chairName || '[инициалы_фамилия_председателя]');
+  return `# Перечень мероприятий\n\n${text}`;
 }
 
 function buildAppendixGroupMarkdown(title, wastes) {
