@@ -63,7 +63,7 @@ export async function replaceDocxPlaceholders(docBuffer, variables, options = {}
   if (!documentFile) throw new Error(`DOCX XML not found: ${xmlPath}`);
 
   const xml = await documentFile.async('string');
-  zip.file(xmlPath, replaceXmlPlaceholders(xml, variables));
+  zip.file(xmlPath, replaceXmlPlaceholders(xml, variables, options));
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
@@ -87,8 +87,8 @@ export function processXmlRepeatingBlocks(xml, placeholder, dataArray, options =
   return `${prefix}${renderedBlocks.join('')}${suffix}`;
 }
 
-export function replaceXmlPlaceholders(xml, variables) {
-  return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraph) => replaceParagraphPlaceholders(paragraph, variables));
+export function replaceXmlPlaceholders(xml, variables, options = {}) {
+  return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraph) => replaceParagraphPlaceholders(paragraph, variables, options));
 }
 
 export function parseDateToFormat(input, format = DEFAULT_DATE_FORMAT) {
@@ -169,7 +169,7 @@ function extractXmlText(xml) {
   return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => unescapeXml(match[1])).join('');
 }
 
-function replaceParagraphPlaceholders(paragraph, variables) {
+function replaceParagraphPlaceholders(paragraph, variables, options = {}) {
   const textNodes = [...paragraph.matchAll(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g)];
   if (!textNodes.length) return paragraph;
 
@@ -181,13 +181,38 @@ function replaceParagraphPlaceholders(paragraph, variables) {
   }
   if (replacedText === originalText) return paragraph;
 
-  let output = paragraph;
-  for (let index = textNodes.length - 1; index >= 0; index -= 1) {
-    const match = textNodes[index];
-    const replacement = index === 0 ? escapeXml(replacedText) : '';
-    output = `${output.slice(0, match.index)}<w:t${match[1] ?? ''}>${replacement}</w:t>${output.slice(match.index + match[0].length)}`;
+  const underlineVariables = Array.isArray(options.underlineVariables) ? options.underlineVariables : [];
+  const shouldUnderline = underlineVariables.some((key) => originalText.includes(`[${key}]`));
+
+  const brPattern = /<br\s*\/?>/i;
+  const segments = replacedText.split(brPattern);
+
+  const resultParagraphs = [];
+  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+    const segment = segments[segmentIndex];
+    let output = paragraph;
+    for (let index = textNodes.length - 1; index >= 0; index -= 1) {
+      const match = textNodes[index];
+      const replacement = index === 0 ? escapeXml(segment) : '';
+      output = `${output.slice(0, match.index)}<w:t${match[1] ?? ''}>${replacement}</w:t>${output.slice(match.index + match[0].length)}`;
+    }
+    if (shouldUnderline && segmentIndex === 0) {
+      output = applyUnderlineToFirstRun(output);
+    }
+    resultParagraphs.push(output);
   }
-  return output;
+
+  return resultParagraphs.join('');
+}
+
+function applyUnderlineToFirstRun(output) {
+  return output.replace(/(<w:r(?:\s[^>]*)?>)(<w:rPr\b[\s\S]*?<\/w:rPr>)?/, (match, rTag, rPr) => {
+    if (rPr) {
+      const withUnderline = rPr.replace(/<\/w:rPr>/, '<w:u w:val="single"/></w:rPr>');
+      return `${rTag}${withUnderline}`;
+    }
+    return `${rTag}<w:rPr><w:u w:val="single"/></w:rPr>`;
+  });
 }
 
 function unescapeXml(value) {

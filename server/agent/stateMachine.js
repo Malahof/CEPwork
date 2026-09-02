@@ -304,17 +304,11 @@ async function handleQuickLaunch(project, answer, now, context = {}) {
 }
 
 function extractOrganizationNameFromText(text) {
-  // Try to extract from quotes first
-  const quotedMatch = text.match(/[«"„]([^»"“]+)[»"”]/u);
-  if (quotedMatch) return quotedMatch[1].trim();
-
-  // Check if it starts with organization type
-  if (/^(?:ооо|зао|оао|ао|ип|общество|компания)/iu.test(text.trim())) {
-    return text.trim();
-  }
-
-  // Otherwise return the whole text as organization name
-  return text.trim();
+  return String(text ?? '')
+    .trim()
+    .replace(/^[—–-]\s*/u, '')
+    .replace(/[.。]+$/u, '')
+    .trim();
 }
 
 export async function selectAgentAnswer(project, answer, now = Date.now(), context = {}) {

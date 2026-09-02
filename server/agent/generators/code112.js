@@ -270,9 +270,15 @@ export async function generate(projectData, userSources = {}) {
 
   if (state.pendingFinalGeneration) {
     const normalized = normalizeAnswer(answer);
-    if (isYesAnswer(normalized)) {
+    let mode = null;
+    if (isYesAnswer(normalized) || normalized.includes('отдельн')) {
+      mode = 'separate';
+    } else if (normalized.includes('архив')) {
+      mode = 'archive';
+    }
+    if (mode) {
       state.pendingFinalGeneration = null;
-      return performFinalGenerationAndArchive(projectData, state, userSources, outputDir, docsPath, now);
+      return performFinalGenerationAndArchive(projectData, state, userSources, outputDir, docsPath, now, mode);
     }
     if (isNoAnswer(normalized) || normalizeAnswer(answer) === 'pause') {
       state.pendingFinalGeneration = null;
@@ -281,7 +287,7 @@ export async function generate(projectData, userSources = {}) {
       projectData.updatedAt = now;
       return projectData;
     }
-    askUser(projectData, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    askUser(projectData, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
     projectData.updatedAt = now;
     return projectData;
   }
@@ -376,8 +382,9 @@ export async function generate(projectData, userSources = {}) {
         return projectData;
       }
       state.pendingWasteImport = null;
-      await generateDocuments(projectData, state, code112Documents, outputDir, docsPath, now);
-      askUser(projectData, 'Все 5 документов по акту инвентаризации сформированы. К чему теперь приступить?', menuOptions(), now);
+      state.pendingFinalGeneration = { outputDir, docsPath };
+      askUser(projectData, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
+      projectData.updatedAt = now;
       return projectData;
     }
     if (state.pendingWasteImport.stage === 'review' && (isYesAnswer(normalized) || isUploadedWasteCommand(answer))) {
@@ -444,7 +451,7 @@ export async function generate(projectData, userSources = {}) {
       return projectData;
     }
     state.pendingFinalGeneration = { outputDir, docsPath };
-    askUser(projectData, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    askUser(projectData, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
     projectData.updatedAt = now;
     return projectData;
   }
@@ -2567,7 +2574,10 @@ async function applyInventoryDocxTemplate(buffer, templateName, data) {
     });
   }
 
-  return replaceDocxPlaceholders(processed, templateVariables(data));
+  const underlineVariables = templateName === 'title_page_template.docx'
+    ? ['название_организации', 'дата_акта', 'дата_начала']
+    : undefined;
+  return replaceDocxPlaceholders(processed, templateVariables(data), { underlineVariables });
 }
 
 async function processAppendixTemplateRows(buffer, data) {
@@ -3111,7 +3121,7 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
     }
     state.activeDocument = null;
     state.pendingFinalGeneration = { outputDir, docsPath };
-    askUser(project, 'Все данные внесены. Хотите сгенерировать DOCX?', confirmationOptions(), now);
+    askUser(project, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
     project.updatedAt = now;
     return project;
   }
@@ -4208,7 +4218,6 @@ async function generateDocuments(project, state, documents, outputDir, docsPath,
   state.status = Object.values(state.files).every((file) => file.status === 'ready') ? 'ready' : 'in_progress';
   state.updatedAt = now;
   project.updatedAt = now;
-  addAgentMessage(project, buildGeneratedFilesMessage(documents, state), now);
 }
 
 function buildGeneratedFilesMessage(documents, state) {
@@ -4269,8 +4278,38 @@ async function archiveProjectInDocs(project, state, docsPath, now) {
   console.log('[code112] Project archived to', archiveProjectId);
 }
 
-async function performFinalGenerationAndArchive(project, state, userSources, outputDir, docsPath, now) {
+async function performFinalGenerationAndArchive(project, state, userSources, outputDir, docsPath, now, mode = 'separate') {
   await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
+
+  if (mode === 'archive') {
+    const data = buildTemplateData(project, state);
+    const projectDir = outputDirectoryForProject(outputDir, project, data);
+    const zip = new JSZip();
+    for (const document of code112Documents) {
+      const file = state.files[document.key];
+      if (file?.path) {
+        const content = await readFile(file.path);
+        zip.file(document.fileName, content);
+      }
+    }
+    const orgSlug = slugify(data.organizationName) || 'organization';
+    const date = data.actDate;
+    const archiveFileName = `Акт_инвентаризации_${orgSlug}_${date}.zip`;
+    const zipPath = path.join(projectDir, archiveFileName);
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+    await writeFile(zipPath, zipBuffer);
+    state.files.archive = {
+      status: 'ready',
+      fileName: archiveFileName,
+      path: zipPath,
+      downloadUrl: `/api/agent/files/${encodeURIComponent(project.id)}/${encodeURIComponent(archiveFileName)}`,
+      generatedAt: now,
+    };
+  }
+
+  const message = mode === 'archive' ? buildArchiveMessage(state) : buildGeneratedFilesMessage(code112Documents, state);
+  addAgentMessage(project, message, now);
+
   await archiveProjectInDocs(project, state, docsPath, now);
   const agentProjectsPath = userSources.agentProjectsPath ?? path.join(path.dirname(docsPath), 'eco_projects.json');
   await archiveProjectInEcoProjects(agentProjectsPath, project.id);
@@ -4278,6 +4317,12 @@ async function performFinalGenerationAndArchive(project, state, userSources, out
   askUser(project, 'Документы сгенерированы и помещены в архив. Работа завершена.', [], now);
   project.updatedAt = now;
   return project;
+}
+
+function buildArchiveMessage(state) {
+  const file = state.files.archive;
+  if (!file) return 'Архив не сформирован.';
+  return `Готово. Сформирован архив со всеми документами: [скачать ZIP](${file.downloadUrl})`;
 }
 
 export async function syncCode112ProjectPages(project, state, docsPath, now, options = {}) {
@@ -5050,6 +5095,13 @@ function menuOptions() {
   ];
 }
 
+function generationChoiceOptions() {
+  return [
+    { key: 'archive', label: 'Архив (ZIP)' },
+    { key: 'separate', label: 'По отдельности' },
+  ];
+}
+
 function documentWorkOptions(state = null, docKey = null) {
   const options = [
     { key: 'useUploadedFile', label: 'Заполнить из загруженного файла' },
@@ -5185,10 +5237,7 @@ function extractOrganizationNameAnswer(answer) {
 
   const match = answer.match(/(?:создадим\s+)?акт\s+инвентаризации\s+для\s+(.+)$/iu);
   if (match) {
-    const tail = cleanupOrganizationName(match[1]);
-    const quoted = tail.match(/[«"“]([^»"”]+)[»"”]/u);
-    if (/^(?:ооо|зао|оао|ао|ип|общество|компания)(?:\s|$)/iu.test(tail)) return tail;
-    return cleanupOrganizationName(quoted?.[1] ?? tail);
+    return cleanupOrganizationName(match[1]);
   }
 
   return cleanupOrganizationName(answer);
