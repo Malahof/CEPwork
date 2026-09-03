@@ -88,7 +88,15 @@ export function processXmlRepeatingBlocks(xml, placeholder, dataArray, options =
 }
 
 export function replaceXmlPlaceholders(xml, variables, options = {}) {
-  return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraph) => replaceParagraphPlaceholders(paragraph, variables, options));
+  return xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (paragraph, offset, fullXml) => {
+    const trStart = fullXml.lastIndexOf('<w:tr', offset);
+    const trEnd = fullXml.indexOf('</w:tr>', offset);
+    let tableContext = '';
+    if (trStart !== -1 && trEnd !== -1 && trStart < offset && trEnd > offset) {
+      tableContext = extractXmlText(fullXml.slice(trStart, trEnd + '</w:tr>'.length));
+    }
+    return replaceParagraphPlaceholders(paragraph, variables, { ...options, tableContext });
+  });
 }
 
 export function parseDateToFormat(input, format = DEFAULT_DATE_FORMAT) {
@@ -170,49 +178,118 @@ function extractXmlText(xml) {
 }
 
 function replaceParagraphPlaceholders(paragraph, variables, options = {}) {
-  const textNodes = [...paragraph.matchAll(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g)];
-  if (!textNodes.length) return paragraph;
+  const keys = Object.keys(variables ?? {});
+  if (!keys.length) return paragraph;
 
-  const originalText = textNodes.map((match) => unescapeXml(match[2])).join('');
-  let replacedText = originalText;
-  for (const [key, value] of Object.entries(variables ?? {})) {
-    replacedText = replacedText.replaceAll(`[${key}]`, String(value ?? ''));
-    replacedText = replacedText.replaceAll(`{{${key}}}`, String(value ?? ''));
+  const runRegex = /<w:r(\s[^>]*)?>([\s\S]*?)<\/w:r>/g;
+  const runs = [];
+  let runMatch;
+  let originalText = '';
+  while ((runMatch = runRegex.exec(paragraph)) !== null) {
+    const rAttrs = runMatch[1] || '';
+    const runContent = runMatch[2];
+    const rPrMatch = runContent.match(/^<w:rPr\b[\s\S]*?<\/w:rPr>/);
+    const rPr = rPrMatch ? rPrMatch[0] : '';
+    const tMatches = [...runContent.matchAll(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g)];
+    const start = originalText.length;
+    for (const t of tMatches) originalText += unescapeXml(t[2]);
+    runs.push({ start, end: originalText.length, rPr, rAttrs, tMatches, raw: runMatch[0], index: runMatch.index });
   }
-  if (replacedText === originalText) return paragraph;
+  if (!runs.length) return paragraph;
 
-  const underlineVariables = Array.isArray(options.underlineVariables) ? options.underlineVariables : [];
-  const shouldUnderline = underlineVariables.some((key) => originalText.includes(`[${key}]`));
-
-  const brPattern = /<br\s*\/?>/i;
-  const segments = replacedText.split(brPattern);
-
-  const resultParagraphs = [];
-  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-    const segment = segments[segmentIndex];
-    let output = paragraph;
-    for (let index = textNodes.length - 1; index >= 0; index -= 1) {
-      const match = textNodes[index];
-      const replacement = index === 0 ? escapeXml(segment) : '';
-      output = `${output.slice(0, match.index)}<w:t${match[1] ?? ''}>${replacement}</w:t>${output.slice(match.index + match[0].length)}`;
+  const markers = [];
+  for (const key of keys) {
+    const pattern = new RegExp(`\\[${escapeRegex(key)}\\]|\\{\\{${escapeRegex(key)}\\}\\}`, 'g');
+    for (const match of originalText.matchAll(pattern)) {
+      markers.push({ start: match.index, end: match.index + match[0].length, key });
     }
-    if (shouldUnderline && segmentIndex === 0) {
-      output = applyUnderlineToFirstRun(output);
+  }
+  if (!markers.length) return paragraph;
+  markers.sort((a, b) => a.start - b.start);
+
+  let pos = 0;
+  const segments = [];
+  for (const marker of markers) {
+    if (marker.start > pos) segments.push({ type: 'text', text: originalText.slice(pos, marker.start), start: pos });
+    segments.push({ type: 'value', key: marker.key, value: String(variables[marker.key] ?? ''), start: marker.start });
+    pos = marker.end;
+  }
+  if (pos < originalText.length) segments.push({ type: 'text', text: originalText.slice(pos), start: pos });
+
+  function findRunIndex(position) {
+    for (let i = 0; i < runs.length; i += 1) {
+      if (position >= runs[i].start && position < runs[i].end) return i;
     }
-    resultParagraphs.push(output);
+    return runs.length - 1;
   }
 
-  return resultParagraphs.join('');
+  function buildTextNode(value, tAttrsSource) {
+    const tAttrs = buildTextAttrs(value, (tAttrsSource && tAttrsSource[1]) ?? '');
+    return `<w:t${tAttrs}>${escapeXml(value)}</w:t>`;
+  }
+
+  function buildValueContent(value, tAttrsSource) {
+    const parts = value.split(/<br\s*\/?>/i);
+    return parts
+      .map((part, index) => {
+        const textNode = buildTextNode(part, tAttrsSource);
+        return index < parts.length - 1 ? `${textNode}<w:br/>` : textNode;
+      })
+      .join('');
+  }
+
+  const pieces = [];
+  for (const segment of segments) {
+    const runIndex = findRunIndex(segment.type === 'text' ? segment.start : segment.start);
+    const run = runs[runIndex];
+    if (segment.type === 'text') {
+      if (!segment.text) continue;
+      const tContent = buildTextNode(segment.text, run.tMatches[0]);
+      pieces.push(`<w:r${run.rAttrs}>${run.rPr}${tContent}</w:r>`);
+    } else {
+      const underline = shouldUnderlineKey(segment.key, options);
+      const effectiveRPr = underline ? addUnderlineToRPr(run.rPr) : run.rPr;
+      const tContent = buildValueContent(segment.value, run.tMatches[0]);
+      pieces.push(`<w:r${run.rAttrs}>${effectiveRPr}${tContent}</w:r>`);
+    }
+  }
+
+  const firstRun = runs[0];
+  const lastRun = runs[runs.length - 1];
+  const prefix = paragraph.slice(0, firstRun.index);
+  const suffix = paragraph.slice(lastRun.index + lastRun.raw.length);
+  return `${prefix}${pieces.join('')}${suffix}`;
 }
 
-function applyUnderlineToFirstRun(output) {
-  return output.replace(/(<w:r(?:\s[^>]*)?>)(<w:rPr\b[\s\S]*?<\/w:rPr>)?/, (match, rTag, rPr) => {
-    if (rPr) {
-      const withUnderline = rPr.replace(/<\/w:rPr>/, '<w:u w:val="single"/></w:rPr>');
-      return `${rTag}${withUnderline}`;
-    }
-    return `${rTag}<w:rPr><w:u w:val="single"/></w:rPr>`;
-  });
+function buildTextAttrs(text, originalTAttrs) {
+  const hasSpace = /^\s|\s$|  /.test(text);
+  const originalPreserve = /xml:space="preserve"/.test(originalTAttrs);
+  if (hasSpace || originalPreserve) return ' xml:space="preserve"';
+  return '';
+}
+
+function shouldUnderlineKey(key, options) {
+  const underlineVariables = Array.isArray(options.underlineVariables) ? options.underlineVariables : [];
+  if (!underlineVariables.includes(key)) return false;
+  if (key === 'дата_акта' && options.tableContext) {
+    const inSignatureTable =
+      /\[должность_(?:председателя|члена_комиссии)\]|\[инициалы_фамилия_(?:председателя|члена_комиссии)\]/.test(
+        options.tableContext
+      );
+    if (inSignatureTable) return false;
+  }
+  return true;
+}
+
+function addUnderlineToRPr(rPr) {
+  if (rPr) {
+    return rPr.replace(/<\/w:rPr>/, '<w:u w:val="single"/></w:rPr>');
+  }
+  return '<w:rPr><w:u w:val="single"/></w:rPr>';
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function unescapeXml(value) {
