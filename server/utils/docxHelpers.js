@@ -95,7 +95,8 @@ export function replaceXmlPlaceholders(xml, variables, options = {}) {
     if (trStart !== -1 && trEnd !== -1 && trStart < offset && trEnd > offset) {
       tableContext = extractXmlText(fullXml.slice(trStart, trEnd + '</w:tr>'.length));
     }
-    return replaceParagraphPlaceholders(paragraph, variables, { ...options, tableContext });
+    const paragraphText = extractXmlText(paragraph);
+    return replaceParagraphPlaceholders(paragraph, variables, { ...options, tableContext, paragraphText });
   });
 }
 
@@ -271,21 +272,33 @@ function buildTextAttrs(text, originalTAttrs) {
 function shouldUnderlineKey(key, options) {
   const underlineVariables = Array.isArray(options.underlineVariables) ? options.underlineVariables : [];
   if (!underlineVariables.includes(key)) return false;
-  if (key === 'дата_акта' && options.tableContext) {
-    const inSignatureTable =
-      /\[должность_(?:председателя|члена_комиссии)\]|\[инициалы_фамилия_(?:председателя|члена_комиссии)\]/.test(
+
+  const pt = String(options.paragraphText ?? '').toLowerCase();
+  const inSignatureTable = options.tableContext
+    ? /\[должность_(?:председателя|члена_комиссии)\]|\[инициалы_фамилия_(?:председателя|члена_комиссии)\]/.test(
         options.tableContext
-      );
-    if (inSignatureTable) return false;
+      )
+    : false;
+  const isActBody = pt.includes('данный акт подтверждает');
+  const isDateHeader = pt.trim().toLowerCase().startsWith('от ');
+
+  if (key === 'название_организации') {
+    return isActBody;
   }
-  return true;
+  if (key === 'дата_акта') {
+    if (inSignatureTable) return false;
+    return isDateHeader || isActBody;
+  }
+  if (key === 'дата_начала') {
+    return isActBody;
+  }
+  return false;
 }
 
 function addUnderlineToRPr(rPr) {
-  if (rPr) {
-    return rPr.replace(/<\/w:rPr>/, '<w:u w:val="single"/></w:rPr>');
-  }
-  return '<w:rPr><w:u w:val="single"/></w:rPr>';
+  if (!rPr) return '<w:rPr><w:u w:val="single"/></w:rPr>';
+  if (/<w:u\b/.test(rPr)) return rPr;
+  return rPr.replace(/<\/w:rPr>/, '<w:u w:val="single"/></w:rPr>');
 }
 
 function escapeRegex(value) {
