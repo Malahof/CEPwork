@@ -10,7 +10,11 @@ export async function fetchDocs(): Promise<DocsSnapshot> {
   return response.json() as Promise<DocsSnapshot>;
 }
 
-export async function saveDocs(snapshot: DocsSnapshot): Promise<DocsSnapshot> {
+export interface DocsSaveResult extends DocsSnapshot {
+  archiveNotice?: { sessionId: string };
+}
+
+export async function saveDocs(snapshot: DocsSnapshot): Promise<DocsSaveResult> {
   const response = await fetch(DOCS_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -23,5 +27,5 @@ export async function saveDocs(snapshot: DocsSnapshot): Promise<DocsSnapshot> {
     throw new Error('Не удалось сохранить документы на сервере');
   }
 
-  return response.json() as Promise<DocsSnapshot>;
+  return response.json() as Promise<DocsSaveResult>;
 }

@@ -222,6 +222,20 @@ const pageDefinitions: Array<Omit<DocPage, 'createdAt' | 'updatedAt'>> = [
     order: 0,
     isTemplate: true,
   },
+  {
+    id: 'waste-reference',
+    title: 'Справочник отходов',
+    content: `# Справочник отходов
+
+Справочная страница. Редактирование только через Цэпика.
+
+| Код | Отход | Источник | Состав |
+|---|---|---|---|
+`,
+    parentId: 'references',
+    order: 0,
+    isTemplate: true,
+  },
 ];
 
 const folderDefinitions: DocFolder[] = [
@@ -261,17 +275,24 @@ const folderDefinitions: DocFolder[] = [
     isExpanded: true,
   },
   {
+    id: 'references',
+    title: 'Справочники',
+    parentId: null,
+    order: 2,
+    isExpanded: true,
+  },
+  {
     id: 'in-progress',
     title: 'В разработке',
     parentId: null,
-    order: 2,
+    order: 3,
     isExpanded: true,
   },
   {
     id: 'archive',
     title: 'Архив',
     parentId: null,
-    order: 3,
+    order: 4,
     isExpanded: false,
   },
 ];

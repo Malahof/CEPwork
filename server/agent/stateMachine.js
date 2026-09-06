@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, readDocsSnapshot, syncCode112ProjectPages } from './generators/code112.js';
+import { getArchiveEditOptions, getArchiveEditQuestion, handleArchiveEdit } from './generators/archiveEdit.js';
 import {
   buildMemoryLoadedMessage,
   buildMemorySystemPrompt,
@@ -316,6 +317,10 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
   const memoryCommandResult = await handleMemoryCommand(project, normalizedAnswer, now, context.memoryPath);
   if (memoryCommandResult) return memoryCommandResult;
 
+  if (project.status === 'archive_edit') {
+    return handleArchiveEdit(project, normalizedAnswer, now, context);
+  }
+
   // Quick launch for code112
   if (project.status === 'selecting' && project.currentNode === 'sphere') {
     const quickLaunchResult = await handleQuickLaunch(project, normalizedAnswer, now, context);
@@ -532,9 +537,17 @@ function logUnsupportedPackage(project, code) {
   });
 }
 
+function projectOrganizationName(project) {
+  const code112Data = project?.extractedData?.code112?.data;
+  const name = code112Data?.Название_организации ?? code112Data?.organizationName;
+  return typeof name === 'string' && name.trim() ? name.trim() : undefined;
+}
+
 export function serializeAgentProject(project) {
+  const organizationName = projectOrganizationName(project);
   return {
     ...project,
+    ...(organizationName ? { organizationName } : {}),
     question: currentQuestion(project),
     availableOptions: currentOptions(project),
   };
@@ -548,12 +561,14 @@ export function listOpenProjects(projects) {
 }
 
 function currentQuestion(project) {
+  if (project.status === 'archive_edit') return getArchiveEditQuestion(project);
   if (project.packageCode === '112') return getCode112Question(project);
   if (project.status !== 'selecting' || !project.currentNode) return null;
   return agentTree[project.currentNode]?.question ?? null;
 }
 
 function currentOptions(project) {
+  if (project.status === 'archive_edit') return getArchiveEditOptions(project);
   if (project.packageCode === '112') return getCode112Options(project);
   if (project.status !== 'selecting' || !project.currentNode) return [];
   return (agentTree[project.currentNode]?.options ?? []).map(({ key, label }) => ({ key, label }));

@@ -59,6 +59,7 @@ export interface AgentProject {
   availableOptions: AgentOption[];
   packageCode?: string;
   packageTitle?: string;
+  organizationName?: string;
   documents?: string[];
 }
 

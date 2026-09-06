@@ -7,6 +7,7 @@ import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../me
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { refreshDisposalReferences, resolveDisposalMethod } from '../disposalResolver.js';
+import { findWasteInReference, loadWasteReference, syncWasteReferencePage, upsertWasteReference } from '../wasteReference.js';
 import {
   WASTE_EXTRACTION_MODES,
   extractWasteDataFromText,
@@ -91,6 +92,7 @@ export async function generate(projectData, userSources = {}) {
   const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
   const memory = await resolveCode112Memory(userSources);
   const memoryMessages = applyMemoryDefaults(projectData, state, memory);
+  if (userSources.referencePath) state.referencePath = userSources.referencePath;
 
   mergeCollectedData(projectData, state, userSources);
 
@@ -268,28 +270,37 @@ export async function generate(projectData, userSources = {}) {
     return handleTitleDataInput(projectData, state, answer, docsPath, now);
   }
 
-  if (state.pendingFinalGeneration) {
+  if (state.pendingFinalGeneration || state.pendingGenerationChoice) {
+    const isFinalize = Boolean(state.pendingFinalGeneration);
     const normalized = normalizeAnswer(answer);
     let mode = null;
-    if (isYesAnswer(normalized) || normalized.includes('отдельн')) {
-      mode = 'separate';
-    } else if (normalized.includes('архив')) {
+    if (normalized === 'archive' || normalized.includes('архив')) {
       mode = 'archive';
+    } else if (normalized === 'separate' || isYesAnswer(normalized) || normalized.includes('отдельн')) {
+      mode = 'separate';
     }
     if (mode) {
       state.pendingFinalGeneration = null;
-      return performFinalGenerationAndArchive(projectData, state, userSources, outputDir, docsPath, now, mode);
+      state.pendingGenerationChoice = null;
+      if (isFinalize) {
+        return performFinalGenerationAndArchive(projectData, state, userSources, outputDir, docsPath, now, mode);
+      }
+      return performGenerationOnly(projectData, state, userSources, outputDir, docsPath, now, mode);
     }
-    if (isNoAnswer(normalized) || normalizeAnswer(answer) === 'pause') {
+    if (normalized === 'cancel' || normalized === normalizeAnswer('Отмена') || isNoAnswer(normalized) || normalized === 'pause') {
       state.pendingFinalGeneration = null;
-      state.pausedAt = now;
-      askUser(projectData, 'Работа по акту инвентаризации сохранена. К чему теперь приступить?', menuOptions(), now);
+      state.pendingGenerationChoice = null;
+      askUser(projectData, 'Генерация отменена. К чему теперь приступить?', menuOptions(), now);
       projectData.updatedAt = now;
       return projectData;
     }
     askUser(projectData, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
     projectData.updatedAt = now;
     return projectData;
+  }
+
+  if (state.pendingWasteReference) {
+    return handleWasteReferenceAnswer(projectData, state, answer, docsPath, now);
   }
 
   if (state.pendingTitleExtraction) {
@@ -444,6 +455,18 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
+  if (isGenerateOnlyAnswer(answer)) {
+    if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
+      askUser(projectData, buildWasteDataIncompleteMessage(state), menuOptions(), now);
+      projectData.updatedAt = now;
+      return projectData;
+    }
+    state.pendingGenerationChoice = { outputDir, docsPath };
+    askUser(projectData, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
+    projectData.updatedAt = now;
+    return projectData;
+  }
+
   if (isGenerateAnswer(answer)) {
     if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
       askUser(projectData, buildWasteDataIncompleteMessage(state), menuOptions(), now);
@@ -479,6 +502,8 @@ export async function generate(projectData, userSources = {}) {
     const memoryQuestion = prepareOrganizationMemoryConfirmation(state, memory, answer);
     if (memoryQuestion) {
       askUser(projectData, memoryQuestion, confirmationOptions(), now);
+    } else if (await promptNewWasteForReference(projectData, state, docsPath, now)) {
+      return projectData;
     } else {
       askUser(projectData, 'К чему теперь приступить?', menuOptions(), now);
     }
@@ -514,7 +539,7 @@ export function getCode112Question(project) {
     if (state.awaitingTitleData?.pendingMore) return 'Хотите добавить еще одного члена комиссии?';
     return q?.question ?? 'Укажите данные для титула акта.';
   }
-  if (state.pendingFinalGeneration) return 'Все данные внесены. Хотите сгенерировать DOCX?';
+  if (state.pendingFinalGeneration || state.pendingGenerationChoice) return 'Как вы хотите получить сгенерированные документы?';
   if (state.pendingDisposalConfirmation) {
     const pendingWaste = state.extractedWasteList.find((w) => wasteKey(w) === state.pendingDisposalConfirmation.wasteKey);
     if (pendingWaste) return buildDisposalConfirmationQuestion(pendingWaste);
@@ -563,7 +588,7 @@ export function getCode112Options(project) {
   if (state.pendingTitleExtraction) return confirmationOptions();
   if (state.pendingWasteFormationExtraction) return confirmationOptions();
   if (state.awaitingTitleData) return [];
-  if (state.pendingFinalGeneration) return confirmationOptions();
+  if (state.pendingFinalGeneration || state.pendingGenerationChoice) return generationChoiceOptions();
   if (state.awaitingOrganizationName) return [];
   if (state.activeDocument) return documentWorkOptions(state, state.activeDocument);
   return menuOptions();
@@ -2843,6 +2868,9 @@ function ensureGeneratorState(project, now) {
       titleDataComplete: false,
       pendingTitleExtraction: null,
       pendingFinalGeneration: null,
+      pendingGenerationChoice: null,
+      pendingWasteReference: null,
+      referenceDeclined: [],
       titleData: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
@@ -2897,6 +2925,11 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.titleDataComplete = project.extractedData.code112.titleDataComplete ?? false;
     project.extractedData.code112.pendingTitleExtraction = project.extractedData.code112.pendingTitleExtraction ?? null;
     project.extractedData.code112.pendingFinalGeneration = project.extractedData.code112.pendingFinalGeneration ?? null;
+    project.extractedData.code112.pendingGenerationChoice = project.extractedData.code112.pendingGenerationChoice ?? null;
+    project.extractedData.code112.pendingWasteReference = project.extractedData.code112.pendingWasteReference ?? null;
+    project.extractedData.code112.referenceDeclined = Array.isArray(project.extractedData.code112.referenceDeclined)
+      ? project.extractedData.code112.referenceDeclined
+      : [];
     project.extractedData.code112.titleData = project.extractedData.code112.titleData ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
     project.extractedData.code112.status = project.extractedData.code112.status || 'in_progress';
@@ -3114,6 +3147,18 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
     return project;
   }
 
+  if (isGenerateOnlyAnswer(answer)) {
+    if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
+      askUser(project, buildWasteDataIncompleteMessage(state), documentWorkOptions(state, document.key), now);
+      return project;
+    }
+    state.activeDocument = null;
+    state.pendingGenerationChoice = { outputDir, docsPath };
+    askUser(project, 'Как вы хотите получить сгенерированные документы?', generationChoiceOptions(), now);
+    project.updatedAt = now;
+    return project;
+  }
+
   if (isGenerateAnswer(answer)) {
     if (state.extractedWasteList.length && !isWasteDataComplete(state)) {
       askUser(project, buildWasteDataIncompleteMessage(state), documentWorkOptions(state, document.key), now);
@@ -3158,6 +3203,10 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
       refreshAppendixContent: document.key === 'appendix',
     });
     const nextQuestion = document.key === 'appendix' ? buildNextWasteDetailsQuestion(state) : '';
+    if (!nextQuestion && (await promptNewWasteForReference(project, state, docsPath, now))) {
+      project.updatedAt = now;
+      return project;
+    }
     askUser(project, nextQuestion || `Данные для файла «${document.label}» сохранены. К чему теперь приступить?`, nextQuestion ? documentWorkOptions(state, document.key) : menuOptions(), now);
     project.updatedAt = now;
     return project;
@@ -4278,33 +4327,54 @@ async function archiveProjectInDocs(project, state, docsPath, now) {
   console.log('[code112] Project archived to', archiveProjectId);
 }
 
+async function createArchiveZip(project, state, outputDir, now) {
+  const data = buildTemplateData(project, state);
+  const projectDir = outputDirectoryForProject(outputDir, project, data);
+  const zip = new JSZip();
+  for (const document of code112Documents) {
+    const file = state.files[document.key];
+    if (file?.path) {
+      const content = await readFile(file.path);
+      zip.file(document.fileName, content);
+    }
+  }
+  const orgSlug = slugify(data.organizationName) || 'organization';
+  const archiveFileName = `Акт_инвентаризации_${orgSlug}_${data.actDate}.zip`;
+  const zipPath = path.join(projectDir, archiveFileName);
+  const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+  await writeFile(zipPath, zipBuffer);
+  state.files.archive = {
+    status: 'ready',
+    fileName: archiveFileName,
+    path: zipPath,
+    downloadUrl: `/api/agent/files/${encodeURIComponent(project.id)}/${encodeURIComponent(archiveFileName)}`,
+    generatedAt: now,
+  };
+}
+
+async function performGenerationOnly(project, state, userSources, outputDir, docsPath, now, mode = 'separate') {
+  console.log('[code112] performGenerationOnly: generating documents without archiving', { projectId: project.id, mode });
+  await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
+  if (mode === 'archive') {
+    await createArchiveZip(project, state, outputDir, now);
+  }
+  const message = mode === 'archive' ? buildArchiveMessage(state) : buildGeneratedFilesMessage(code112Documents, state);
+  addAgentMessage(project, message, now);
+  askUser(
+    project,
+    'Документы сгенерированы. Проект остаётся в папке «В разработке» — можно продолжить редактирование. К чему теперь приступить?',
+    menuOptions(),
+    now
+  );
+  project.updatedAt = now;
+  return project;
+}
+
 async function performFinalGenerationAndArchive(project, state, userSources, outputDir, docsPath, now, mode = 'separate') {
   await generateDocuments(project, state, code112Documents, outputDir, docsPath, now);
 
   if (mode === 'archive') {
-    const data = buildTemplateData(project, state);
-    const projectDir = outputDirectoryForProject(outputDir, project, data);
-    const zip = new JSZip();
-    for (const document of code112Documents) {
-      const file = state.files[document.key];
-      if (file?.path) {
-        const content = await readFile(file.path);
-        zip.file(document.fileName, content);
-      }
-    }
-    const orgSlug = slugify(data.organizationName) || 'organization';
-    const date = data.actDate;
-    const archiveFileName = `Акт_инвентаризации_${orgSlug}_${date}.zip`;
-    const zipPath = path.join(projectDir, archiveFileName);
-    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-    await writeFile(zipPath, zipBuffer);
-    state.files.archive = {
-      status: 'ready',
-      fileName: archiveFileName,
-      path: zipPath,
-      downloadUrl: `/api/agent/files/${encodeURIComponent(project.id)}/${encodeURIComponent(archiveFileName)}`,
-      generatedAt: now,
-    };
+    await createArchiveZip(project, state, outputDir, now);
   }
 
   const message = mode === 'archive' ? buildArchiveMessage(state) : buildGeneratedFilesMessage(code112Documents, state);
@@ -4314,6 +4384,8 @@ async function performFinalGenerationAndArchive(project, state, userSources, out
   const agentProjectsPath = userSources.agentProjectsPath ?? path.join(path.dirname(docsPath), 'eco_projects.json');
   await archiveProjectInEcoProjects(agentProjectsPath, project.id);
   state.status = 'completed';
+  project.status = 'completed';
+  project.archivedAt = now;
   askUser(project, 'Документы сгенерированы и помещены в архив. Работа завершена.', [], now);
   project.updatedAt = now;
   return project;
@@ -4841,7 +4913,7 @@ export async function readDocsSnapshot(docsPath) {
   }
 }
 
-async function writeDocsSnapshot(docsPath, snapshot) {
+export async function writeDocsSnapshot(docsPath, snapshot) {
   await mkdir(path.dirname(docsPath), { recursive: true });
   const tmpPath = `${docsPath}.tmp`;
   await writeFile(tmpPath, `${JSON.stringify(normalizeDocsSnapshot(snapshot), null, 2)}\n`);
@@ -5082,6 +5154,101 @@ function outputDirectoryForProject(outputDir, project, data) {
   return path.join(outputDir, slugify(data.organizationName), project.id, slugify('Акт инвентаризации'));
 }
 
+export async function regenerateArchivedCode112Documents(sourceProjectId, docKeys, outputDir, docsPath, now, savedState = null) {
+  const stubProject = { id: sourceProjectId, extractedData: {}, packageTitle: 'Акт инвентаризации' };
+  const state = savedState ?? {
+    status: 'in_progress',
+    data: {},
+    wastes: [],
+    extractedWasteList: [],
+    sources: [],
+    memory: { dateFormat: DEFAULT_DATE_FORMAT },
+    files: Object.fromEntries(
+      code112Documents.map((document) => [
+        document.key,
+        { key: document.key, label: document.label, status: 'pending', fileName: document.fileName, downloadUrl: null, generatedAt: null },
+      ])
+    ),
+  };
+  state.data = state.data ?? {};
+  state.wastes = Array.isArray(state.wastes) ? state.wastes : [];
+  state.memory = state.memory ?? { dateFormat: DEFAULT_DATE_FORMAT };
+  state.files = state.files ?? {};
+  await syncProjectDataFromDocs(stubProject, state, docsPath);
+  const data = buildTemplateData(stubProject, state);
+  const projectDir = outputDirectoryForProject(outputDir, stubProject, data);
+  const documents = Array.isArray(docKeys) && docKeys.length
+    ? code112Documents.filter((document) => docKeys.includes(document.key))
+    : code112Documents;
+  const results = [];
+  for (const document of documents) {
+    const outputPath = path.join(projectDir, document.fileName);
+    await createDocxFromTemplate(path.join(TEMPLATE_DIR, document.template), data, outputPath);
+    results.push({
+      key: document.key,
+      label: document.label,
+      fileName: document.fileName,
+      downloadUrl: `/api/agent/files/${encodeURIComponent(sourceProjectId)}/${encodeURIComponent(document.fileName)}`,
+    });
+  }
+  console.log('[code112] regenerateArchivedCode112Documents: regenerated', { sourceProjectId, count: results.length });
+  return { results, projectDir };
+}
+
+async function promptNewWasteForReference(project, state, docsPath, now, resume = null) {
+  if (state.pendingWasteReference) return false;
+  const reference = await loadWasteReference(state.referencePath);
+  const declined = new Set(state.referenceDeclined ?? []);
+  const candidate = (Array.isArray(state.wastes) ? state.wastes : []).find(
+    (waste) => waste?.code && !findWasteInReference(reference, waste.code) && !declined.has(waste.code)
+  );
+  if (!candidate) return false;
+  state.pendingWasteReference = { code: candidate.code, resume };
+  console.log('[code112] Отход отсутствует в справочнике:', candidate.code);
+  askUser(
+    project,
+    `Отход ${candidate.code} «${candidate.name ?? candidate.wasteName ?? 'без наименования'}» отсутствует в справочнике. Хотите добавить его в справочник с текущими значениями источника и состава?`,
+    confirmationOptions(),
+    now
+  );
+  return true;
+}
+
+async function handleWasteReferenceAnswer(project, state, answer, docsPath, now) {
+  const pending = state.pendingWasteReference;
+  const normalized = normalizeAnswer(answer);
+  const waste = (Array.isArray(state.wastes) ? state.wastes : []).find((item) => item.code === pending?.code);
+  state.pendingWasteReference = null;
+
+  if (isYesAnswer(normalized) && waste) {
+    const entry = {
+      code: waste.code,
+      name: waste.name ?? waste.wasteName ?? '',
+      source: waste.sourceName ?? waste.source ?? '',
+      composition: waste.composition ?? '',
+    };
+    await upsertWasteReference(entry, state.referencePath);
+    await syncWasteReferencePage(docsPath, state.referencePath);
+    addAgentMessage(project, `Отход ${entry.code} добавлен в справочник отходов.`, now);
+  } else {
+    if (!isYesAnswer(normalized) && pending?.code) {
+      state.referenceDeclined = [...new Set([...(state.referenceDeclined ?? []), pending.code])];
+    }
+    addAgentMessage(project, 'Отход не добавлен в справочник.', now);
+  }
+
+  if (pending?.resume === 'wasteEdit' && state.pendingWasteImport) {
+    state.pendingWasteImport = { ...state.pendingWasteImport, stage: 'edit' };
+    askUser(project, buildWasteEditQuestion(state), [], now);
+  } else if (state.pendingWasteImport) {
+    askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
+  } else {
+    askUser(project, 'К чему теперь приступить?', menuOptions(), now);
+  }
+  project.updatedAt = now;
+  return project;
+}
+
 function askUser(project, question, options, now) {
   const optionText = options.length ? `\n\nВарианты:\n${options.map((option) => `• ${option.label}`).join('\n')}` : '';
   addAgentMessage(project, `${question}${optionText}`, now);
@@ -5090,6 +5257,7 @@ function askUser(project, question, options, now) {
 function menuOptions() {
   return [
     ...code112Documents.map((document) => ({ key: document.key, label: document.label })),
+    { key: 'generateDocs', label: 'Сгенерировать DOCX' },
     { key: 'generateAll', label: 'Закончить / Сгенерировать DOCX' },
     { key: 'pause', label: 'Остановиться и продолжить позже' },
   ];
@@ -5099,6 +5267,7 @@ function generationChoiceOptions() {
   return [
     { key: 'archive', label: 'Архив (ZIP)' },
     { key: 'separate', label: 'По отдельности' },
+    { key: 'cancel', label: 'Отмена' },
   ];
 }
 
@@ -5158,8 +5327,16 @@ function isGenerateAnswer(answer) {
   const normalized = normalizeAnswer(answer);
   return ['generateall', 'finish', 'done'].includes(normalized)
     || normalized === normalizeAnswer('Сгенерировать все')
+    || normalized === normalizeAnswer('Закончить')
+    || normalized === normalizeAnswer('Закончить / Сгенерировать DOCX');
+}
+
+function isGenerateOnlyAnswer(answer) {
+  const normalized = normalizeAnswer(answer);
+  return normalized === 'generatedocs'
     || normalized === normalizeAnswer('Сгенерировать DOCX')
-    || normalized === normalizeAnswer('Закончить');
+    || normalized === normalizeAnswer('Сгенерировать DOCX без завершения')
+    || normalized === normalizeAnswer('Сгенерировать без завершения');
 }
 
 function isFillTemplateAnswer(answer) {
@@ -5222,6 +5399,7 @@ function isOrganizationActionAnswer(answer) {
   const normalized = normalizeAnswer(answer);
   return Boolean(findDocument(answer))
     || isGenerateAnswer(answer)
+    || isGenerateOnlyAnswer(answer)
     || isFillTemplateAnswer(answer)
     || isUploadedWasteCommand(answer)
     || normalized === 'createdraft'

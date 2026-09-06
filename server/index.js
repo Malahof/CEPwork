@@ -12,7 +12,13 @@ import {
 import {
   readAgentProjects,
   updateAgentProjects,
+  writeAgentProjects,
 } from './agent/storage.js';
+import {
+  createArchiveEditSession,
+  extractArchivedProjectId,
+  isArchivedPage,
+} from './agent/generators/archiveEdit.js';
 import {
   buildMemorySystemPrompt,
   deleteInstruction,
@@ -334,11 +340,48 @@ app.get('/api/docs', async (_req, res, next) => {
   }
 });
 
+async function maybeStartArchiveEditSession(snapshot) {
+  const pageId = snapshot.activePageId;
+  if (!pageId || !isArchivedPage(snapshot, pageId)) return null;
+  const sourceProjectId = extractArchivedProjectId(pageId);
+  if (!sourceProjectId) return null;
+
+  const projects = await readAgentProjects(agentProjectsPath);
+  const existing = projects.find(
+    (item) => item.status === 'archive_edit' && item.extractedData?.archiveEdit?.sourceProjectId === sourceProjectId
+  );
+  if (existing) {
+    existing.extractedData.archiveEdit.pageId = pageId;
+    if (existing.extractedData.archiveEdit.stage === 'done') {
+      existing.extractedData.archiveEdit.stage = 'confirm';
+      existing.status = 'archive_edit';
+      existing.updatedAt = Date.now();
+    }
+    await writeAgentProjects(agentProjectsPath, projects);
+    console.log('[archiveEdit] Переиспользуем существующую сессию', { sessionId: existing.id, sourceProjectId });
+    return { sessionId: existing.id };
+  }
+
+  const sourceProject = projects.find((item) => item.id === sourceProjectId);
+  const organizationName = sourceProject?.extractedData?.code112?.data?.Название_организации ?? '';
+  const session = createArchiveEditSession(sourceProjectId, pageId, Date.now(), organizationName);
+  projects.push(session);
+  await writeAgentProjects(agentProjectsPath, projects);
+  console.log('[archiveEdit] Создана сессия при открытии страницы архива', { sessionId: session.id, pageId });
+  return { sessionId: session.id };
+}
+
 app.post('/api/docs', async (req, res, next) => {
   try {
     const snapshot = normalizeDocsSnapshot(req.body);
     await writeDocs(snapshot);
-    res.json(snapshot);
+    let archiveNotice = null;
+    try {
+      archiveNotice = await maybeStartArchiveEditSession(snapshot);
+    } catch (error) {
+      console.warn('[archiveEdit] Не удалось создать сессию редактирования архива', error.message);
+    }
+    res.json({ ...snapshot, ...(archiveNotice ? { archiveNotice } : {}) });
   } catch (error) {
     res.status(400);
     next(error);
@@ -446,6 +489,11 @@ app.post('/api/agent/select', async (req, res, next) => {
       if (!found) {
         const error = new Error('Проект Цэпика не найден');
         error.statusCode = 404;
+        throw error;
+      }
+      if (found.status === 'completed' && !found.extractedData?.archiveEdit) {
+        const error = new Error('Этот проект уже завершён и находится в архиве. Документы можно просматривать в папке «Архив», а при необходимости — изменить отдельные поля или сгенерировать файлы заново.');
+        error.statusCode = 410;
         throw error;
       }
       return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, docsPath, memoryPath: userMemoryPath });
@@ -557,6 +605,10 @@ app.get('/api/agent/state/:projectId', async (req, res, next) => {
     if (!project) {
       res.status(404);
       throw new Error('Проект Цэпика не найден');
+    }
+    if (project.status === 'completed') {
+      res.status(410);
+      throw new Error('Этот проект уже завершён и находится в архиве. Документы можно просматривать в папке «Архив», а при необходимости — изменить отдельные поля или сгенерировать файлы заново.');
     }
     res.json(serializeAgentProject(project));
   } catch (error) {

@@ -74,7 +74,15 @@ export const useDocStore = create<DocState>()((set, get) => {
   async function saveSnapshot(snapshot: DocsSnapshot) {
     set({ isSaving: true, error: null });
     try {
-      const saved = snapshotWithDefaultTemplates(await saveDocs(snapshot));
+      const response = await saveDocs(snapshot);
+      if (response.archiveNotice?.sessionId) {
+        window.dispatchEvent(
+          new CustomEvent('cepik:archive-session', {
+            detail: { projectId: response.archiveNotice.sessionId },
+          })
+        );
+      }
+      const saved = snapshotWithDefaultTemplates(response);
       set({
         pages: saved.pages,
         folders: saved.folders,

@@ -398,15 +398,19 @@ test('код 112 starts the inventory act generator and creates five DOCX files'
   assert.equal(withOrganization.question, 'К чему теперь приступить?');
   assert.deepEqual(
     withOrganization.availableOptions.map((option) => option.key),
-    ['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures', 'generateAll', 'pause']
+    ['titleAct', 'appendix', 'sources', 'wasteFormation', 'measures', 'generateDocs', 'generateAll', 'pause']
   );
   assert.equal(withOrganization.extractedData.code112.data.Название_организации, 'ООО Фермент');
   assert.match(withOrganization.history.at(-1).text, /С чего хотите начать/);
 
   const generated = await selectAgentOption(started.id, 'generateAll');
-  assert.match(generated.question, /Хотите сгенерировать DOCX/);
+  assert.match(generated.question, /Как вы хотите получить сгенерированные документы/);
+  assert.deepEqual(
+    generated.availableOptions.map((option) => option.key),
+    ['archive', 'separate', 'cancel']
+  );
 
-  const confirmed = await selectAgentOption(started.id, 'Да');
+  const confirmed = await selectAgentOption(started.id, 'По отдельности');
   const files = confirmed.extractedData.code112.files;
   assert.equal(confirmed.extractedData.code112.status, 'completed');
   assert.equal(Object.values(files).filter((file) => file.status === 'ready').length, 5);
@@ -418,9 +422,21 @@ test('код 112 starts the inventory act generator and creates five DOCX files'
   const buffer = Buffer.from(await downloadResponse.arrayBuffer());
   assert.equal(buffer.subarray(0, 2).toString('utf8'), 'PK');
 
-  const { result: unknownCode, logs } = await captureConsoleLog(() => selectAgentOption(started.id, '999'));
-  assert.equal(unknownCode.history.at(-2).text, unsupportedDocumentationMessage);
-  assert.deepEqual(logs.find((entry) => entry[0] === '[Цэпик] Запрошена нереализованная ветка')[1], { projectId: started.id, code: '999' });
+  assert.equal(confirmed.status, 'completed');
+
+  const openProjectsResponse = await fetch(`${baseUrl}/api/agent/projects`);
+  const openProjects = await openProjectsResponse.json();
+  assert.equal(openProjects.some((item) => item.id === started.id), false);
+
+  const stateResponse = await fetch(`${baseUrl}/api/agent/state/${started.id}`);
+  assert.equal(stateResponse.status, 410);
+
+  const selectResponse = await fetch(`${baseUrl}/api/agent/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: started.id, answer: '999' }),
+  });
+  assert.equal(selectResponse.status, 410);
 });
 
 test('POST /api/ai/eco-agent requires OPENAI_API_KEY', async () => {

@@ -92,6 +92,24 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
   }, []);
 
   useEffect(() => {
+    function onArchiveSession(event: Event) {
+      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+      const projectId = detail?.projectId;
+      if (!projectId) return;
+      void (async () => {
+        try {
+          console.info('[ChatWizard] archiveSession', { projectId });
+          updateProjectList(await fetchAgentProjectState(projectId));
+        } catch (error) {
+          setError(error instanceof Error ? error.message : 'Не удалось открыть сессию архива');
+        }
+      })();
+    }
+    window.addEventListener('cepik:archive-session', onArchiveSession);
+    return () => window.removeEventListener('cepik:archive-session', onArchiveSession);
+  }, []);
+
+  useEffect(() => {
     const container = messagesRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
@@ -287,7 +305,10 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
               type="button"
               onClick={() => void handleResumeProject(item.id)}
             >
-              <strong>{item.packageTitle ?? item.question ?? 'Новый проект'}</strong>
+              <strong>
+                {item.packageTitle ?? item.question ?? 'Новый проект'}
+                {item.organizationName ? ` — ${item.organizationName}` : ''}
+              </strong>
               <span>
                 {item.packageCode ? `Код ${item.packageCode}` : 'Выбор пакета не завершён'} ·{' '}
                 {new Date(item.updatedAt).toLocaleString('ru-RU')}
