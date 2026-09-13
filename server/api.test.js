@@ -352,29 +352,33 @@ test('Цэпик returns a Russian fallback and logs unimplemented package codes
   assert.equal(logEntry[1].code, '999');
 
   const cases = [
-    [['waste', 'development', 'instruction'], '111'],
-    [['waste', 'development', 'disposalPermit'], '113'],
-    [['waste', 'development', 'simpleWasteSet'], '114'],
-    [['waste', 'development', 'fullWasteSet'], '115'],
-    [['waste', 'support', 'pod10'], '121'],
-    [['waste', 'support', 'pod9Pod10'], '122'],
-    [['emissions', 'pod123'], '21'],
-    [['emissions', 'pod4'], '22'],
-    [['emissions', 'emissionsSet'], '23'],
-    [['complex', 'development', 'penInstruction'], '311'],
-    [['complex', 'development', 'ecoPassport'], '312'],
-    [['complex', 'support', 'complexSupportAccounting'], '32'],
-    [['complex', 'support', 'complexSupportAct'], '32'],
-    [['complex', 'support', 'complexSupportSchedule'], '32'],
-    [['complex', 'support', 'complexSupportAnnualPlan'], '32'],
+    [['waste', 'development', 'instruction'], '111', 'package_selected'],
+    [['waste', 'development', 'disposalPermit'], '113', 'selecting'],
+    [['waste', 'development', 'simpleWasteSet'], '114', 'selecting'],
+    [['waste', 'development', 'fullWasteSet'], '115', 'selecting'],
+    [['waste', 'support', 'pod10'], '121', 'selecting'],
+    [['waste', 'support', 'pod9Pod10'], '122', 'selecting'],
+    [['emissions', 'pod123'], '21', 'selecting'],
+    [['emissions', 'pod4'], '22', 'selecting'],
+    [['emissions', 'emissionsSet'], '23', 'selecting'],
+    [['complex', 'development', 'penInstruction'], '311', 'selecting'],
+    [['complex', 'development', 'ecoPassport'], '312', 'selecting'],
+    [['complex', 'support', 'complexSupportAccounting'], '32', 'selecting'],
+    [['complex', 'support', 'complexSupportAct'], '32', 'selecting'],
+    [['complex', 'support', 'complexSupportSchedule'], '32', 'selecting'],
+    [['complex', 'support', 'complexSupportAnnualPlan'], '32', 'selecting'],
   ];
 
-  for (const [answers, expectedCode] of cases) {
+  for (const [answers, expectedCode, expectedStatus] of cases) {
     const { result: project, logs } = await captureConsoleLog(() => completeAgentPath(answers));
-    assert.equal(project.status, 'selecting');
-    assert.equal(project.packageCode, undefined);
-    assert.equal(project.history.at(-1).text, unsupportedDocumentationMessage);
-    assert.deepEqual(logs.at(-1)[1], { projectId: project.id, code: expectedCode });
+    assert.equal(project.status, expectedStatus);
+    if (expectedStatus === 'selecting') {
+      assert.equal(project.packageCode, undefined);
+      assert.equal(project.history.at(-1).text, unsupportedDocumentationMessage);
+      assert.deepEqual(logs.at(-1)[1], { projectId: project.id, code: expectedCode });
+    } else {
+      assert.equal(project.packageCode, expectedCode);
+    }
   }
 });
 

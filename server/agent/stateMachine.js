@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, readDocsSnapshot, syncCode112ProjectPages } from './generators/code112.js';
+import { generate as generateCode111, getCode111Options, getCode111Question } from './generators/code111.js';
 import { getArchiveEditOptions, getArchiveEditQuestion, handleArchiveEdit } from './generators/archiveEdit.js';
 import {
   buildMemoryLoadedMessage,
@@ -14,7 +15,7 @@ import {
 
 const welcomeMessage = 'Цэпик ожидает ваших указаний для начала работы.';
 const unsupportedDocumentationMessage = code112FallbackMessage;
-const packageGeneratorCodes = new Set(['112']);
+const packageGeneratorCodes = new Set(['112', '111']);
 
 const packageDefinitions = {
   instruction: {
@@ -225,6 +226,18 @@ export function createAgentProject(now = Date.now(), memory = null) {
 async function handleQuickLaunch(project, answer, now, context = {}) {
   console.log('[stateMachine] handleQuickLaunch called with answer:', answer);
   
+  // Direct code "111" - create project and ask for УНП
+  if (answer === '111') {
+    const packageDefinition = packageDefinitions.instruction;
+    project.status = 'package_selected';
+    project.currentNode = null;
+    project.packageCode = packageDefinition.code;
+    project.packageTitle = packageDefinition.title;
+    project.documents = packageDefinition.documents;
+    addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+    return generateCode111(project, { now, outputDir: context.outputDir, docsPath: context.docsPath });
+  }
+
   // Direct code "112" - create project and ask for organization name
   if (answer === '112') {
     console.log('[stateMachine] Quick launch with code 112');
@@ -338,6 +351,9 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
       return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
+    if (project.packageCode === '111') {
+      return generateCode111(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath });
+    }
 
     addUserMessage(project, normalizedAnswer, now);
     if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
@@ -403,6 +419,9 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
     if (packageDefinition.code === '112') {
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
       return generateCode112(project, { now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+    }
+    if (packageDefinition.code === '111') {
+      return generateCode111(project, { now, outputDir: context.outputDir, docsPath: context.docsPath });
     }
     return project;
   }
@@ -539,7 +558,8 @@ function logUnsupportedPackage(project, code) {
 
 function projectOrganizationName(project) {
   const code112Data = project?.extractedData?.code112?.data;
-  const name = code112Data?.Название_организации ?? code112Data?.organizationName;
+  const code111Data = project?.extractedData?.code111?.data;
+  const name = code112Data?.Название_организации ?? code112Data?.organizationName ?? code111Data?.название_организации;
   return typeof name === 'string' && name.trim() ? name.trim() : undefined;
 }
 
@@ -563,6 +583,7 @@ export function listOpenProjects(projects) {
 function currentQuestion(project) {
   if (project.status === 'archive_edit') return getArchiveEditQuestion(project);
   if (project.packageCode === '112') return getCode112Question(project);
+  if (project.packageCode === '111') return getCode111Question(project);
   if (project.status !== 'selecting' || !project.currentNode) return null;
   return agentTree[project.currentNode]?.question ?? null;
 }
@@ -570,6 +591,7 @@ function currentQuestion(project) {
 function currentOptions(project) {
   if (project.status === 'archive_edit') return getArchiveEditOptions(project);
   if (project.packageCode === '112') return getCode112Options(project);
+  if (project.packageCode === '111') return getCode111Options(project);
   if (project.status !== 'selecting' || !project.currentNode) return [];
   return (agentTree[project.currentNode]?.options ?? []).map(({ key, label }) => ({ key, label }));
 }

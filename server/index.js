@@ -16,6 +16,7 @@ import {
 } from './agent/storage.js';
 import {
   createArchiveEditSession,
+  extractArchivedProjectCode,
   extractArchivedProjectId,
   isArchivedPage,
 } from './agent/generators/archiveEdit.js';
@@ -363,8 +364,11 @@ async function maybeStartArchiveEditSession(snapshot) {
   }
 
   const sourceProject = projects.find((item) => item.id === sourceProjectId);
-  const organizationName = sourceProject?.extractedData?.code112?.data?.Название_организации ?? '';
-  const session = createArchiveEditSession(sourceProjectId, pageId, Date.now(), organizationName);
+  const organizationName = sourceProject?.extractedData?.code112?.data?.Название_организации
+    ?? sourceProject?.extractedData?.code111?.data?.название_организации
+    ?? '';
+  const sourceCode = extractArchivedProjectCode(pageId) ?? sourceProject?.packageCode ?? '112';
+  const session = createArchiveEditSession(sourceProjectId, pageId, Date.now(), organizationName, sourceCode);
   projects.push(session);
   await writeAgentProjects(agentProjectsPath, projects);
   console.log('[archiveEdit] Создана сессия при открытии страницы архива', { sessionId: session.id, pageId });
@@ -542,7 +546,12 @@ app.post('/api/agent/upload', async (req, res, next) => {
         text: `Файл «${file.filename}» загружен, извлечено ${charCount} символов.`,
         createdAt: now,
       });
-      await registerCode112Upload(found, uploadRecord, { now, buffer: file.buffer });
+      if (found.packageCode === '112') {
+        await registerCode112Upload(found, uploadRecord, { now, buffer: file.buffer });
+      } else if (found.packageCode === '111') {
+        const { registerCode111Upload } = await import('./agent/generators/code111.js');
+        await registerCode111Upload(found, uploadRecord, { now, buffer: file.buffer });
+      }
       found.updatedAt = now;
       return found;
     });

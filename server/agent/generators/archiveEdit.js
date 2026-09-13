@@ -5,6 +5,10 @@ import {
   regenerateArchivedCode112Documents,
   writeDocsSnapshot,
 } from './code112.js';
+import {
+  code111Documents,
+  regenerateArchivedCode111Documents,
+} from './code111.js';
 
 export const ARCHIVE_SESSION_STATUS = 'archive_edit';
 
@@ -26,11 +30,17 @@ const MANUAL_OPTIONS = [
 
 const MORE_OPTIONS = CONFIRM_OPTIONS;
 
-const GENERATE_OPTIONS = [
-  ...code112Documents.map((document) => ({ key: `gen-${document.key}`, label: document.label })),
-  { key: 'gen-all', label: 'Все документы' },
-  { key: 'cancel', label: 'Отмена' },
-];
+function documentsForCode(code) {
+  return code === '111' ? code111Documents : code112Documents;
+}
+
+function generateOptionsForCode(code) {
+  return [
+    ...documentsForCode(code).map((document) => ({ key: `gen-${document.key}`, label: document.label })),
+    { key: 'gen-all', label: 'Все документы' },
+    { key: 'cancel', label: 'Отмена' },
+  ];
+}
 
 function addAgentMessage(project, text, now) {
   project.history = Array.isArray(project.history) ? project.history : [];
@@ -76,11 +86,16 @@ export function isArchivedPage(snapshot, pageId) {
 }
 
 export function extractArchivedProjectId(pageId) {
-  const match = /^agent-([0-9a-f-]{36})-code112-/.exec(String(pageId ?? ''));
+  const match = /^agent-([0-9a-f-]{36})-code(\d+)-/.exec(String(pageId ?? ''));
   return match?.[1] ?? null;
 }
 
-export function createArchiveEditSession(sourceProjectId, pageId, now, organizationName = '') {
+export function extractArchivedProjectCode(pageId) {
+  const match = /^agent-[0-9a-f-]{36}-code(\d+)-/.exec(String(pageId ?? ''));
+  return match?.[1] ?? null;
+}
+
+export function createArchiveEditSession(sourceProjectId, pageId, now, organizationName = '', sourceCode = '112') {
   const project = {
     id: randomUUID(),
     createdAt: now,
@@ -90,10 +105,11 @@ export function createArchiveEditSession(sourceProjectId, pageId, now, organizat
     selections: {},
     systemPrompt: '',
     packageTitle: `Архив: ${organizationName || 'проект'}`,
-    packageCode: '112',
+    packageCode: sourceCode,
     extractedData: {
       archiveEdit: {
         sourceProjectId,
+        sourceCode,
         pageId,
         stage: 'confirm',
         variable: null,
@@ -107,18 +123,18 @@ export function createArchiveEditSession(sourceProjectId, pageId, now, organizat
   return project;
 }
 
-function archivePagePrefix(sourceProjectId) {
-  return `agent-${sourceProjectId}-code112-`;
+function archivePagePrefix(sourceProjectId, sourceCode = '112') {
+  return `agent-${sourceProjectId}-code${sourceCode}-`;
 }
 
-function documentKeyFromPageId(sourceProjectId, pageId) {
-  const prefix = archivePagePrefix(sourceProjectId);
+function documentKeyFromPageId(sourceProjectId, pageId, sourceCode = '112') {
+  const prefix = archivePagePrefix(sourceProjectId, sourceCode);
   return pageId.startsWith(prefix) ? pageId.slice(prefix.length) : null;
 }
 
-async function archivedProjectPages(docsPath, sourceProjectId) {
+async function archivedProjectPages(docsPath, sourceProjectId, sourceCode = '112') {
   const snapshot = await readDocsSnapshot(docsPath);
-  const prefix = archivePagePrefix(sourceProjectId);
+  const prefix = archivePagePrefix(sourceProjectId, sourceCode);
   const pages = (snapshot.pages ?? []).filter((page) => page.id.startsWith(prefix));
   return { snapshot, pages };
 }
@@ -159,7 +175,7 @@ export function getArchiveEditOptions(project) {
     case 'manual':
       return MANUAL_OPTIONS;
     case 'generate':
-      return GENERATE_OPTIONS;
+      return generateOptionsForCode(session.sourceCode);
     default:
       return [];
   }
@@ -239,7 +255,7 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
       project.updatedAt = now;
       return project;
     }
-    const { pages } = await archivedProjectPages(docsPath, session.sourceProjectId);
+    const { pages } = await archivedProjectPages(docsPath, session.sourceProjectId, session.sourceCode);
     const patterns = [`[${variable}]`, `{{${variable}}}`];
     const occurrences = pages.reduce(
       (count, page) => count + patterns.reduce((sum, pattern) => sum + page.content.split(pattern).length - 1, 0),
@@ -262,7 +278,7 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
   if (session.stage === 'value') {
     const variable = session.variable;
     const newValue = answer;
-    const { snapshot, pages } = await archivedProjectPages(docsPath, session.sourceProjectId);
+    const { snapshot, pages } = await archivedProjectPages(docsPath, session.sourceProjectId, session.sourceCode);
     const patterns = [`[${variable}]`, `{{${variable}}}`];
     let replaced = 0;
     const changedDocs = new Set(session.changedDocuments);
@@ -277,7 +293,7 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
       if (content !== page.content) {
         page.content = content;
         page.updatedAt = now;
-        const docKey = documentKeyFromPageId(session.sourceProjectId, page.id);
+        const docKey = documentKeyFromPageId(session.sourceProjectId, page.id, session.sourceCode);
         if (docKey) changedDocs.add(docKey);
       }
     }
@@ -321,10 +337,10 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
       return project;
     }
     if (normalized === 'done' || normalized === 'готово' || isYesAnswer(answer)) {
-      const { snapshot, pages } = await archivedProjectPages(docsPath, session.sourceProjectId);
+      const { pages } = await archivedProjectPages(docsPath, session.sourceProjectId, session.sourceCode);
       const changed = new Set(session.changedDocuments);
       for (const page of pages) {
-        const key = documentKeyFromPageId(session.sourceProjectId, page.id);
+        const key = documentKeyFromPageId(session.sourceProjectId, page.id, session.sourceCode);
         if (key && Number.isFinite(page.updatedAt) && page.updatedAt >= session.manualStartedAt) changed.add(key);
       }
       session.changedDocuments = [...changed];
@@ -340,10 +356,11 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
     if (normalized === 'cancel' || normalized === 'отмена') {
       return finishSession(project, 'Генерация отменена. Проект остаётся в архиве.', now);
     }
+    const documents = documentsForCode(session.sourceCode);
     let docKeys = null;
     if (normalized !== 'gen-all' && normalized !== 'все документы' && normalized !== 'все') {
       const key = normalized.startsWith('gen-') ? normalized.slice(4) : null;
-      const document = code112Documents.find(
+      const document = documents.find(
         (item) => item.key === key || normalizeAnswer(item.label) === normalized
       );
       if (!document) {
@@ -353,8 +370,9 @@ export async function handleArchiveEdit(project, answer, now, context = {}) {
       }
       docKeys = [document.key];
     }
-    const selectedKeys = docKeys ?? (session.changedDocuments.length ? session.changedDocuments : code112Documents.map((d) => d.key));
-    const { results } = await regenerateArchivedCode112Documents(
+    const selectedKeys = docKeys ?? (session.changedDocuments.length ? session.changedDocuments : documents.map((d) => d.key));
+    const regenerate = session.sourceCode === '111' ? regenerateArchivedCode111Documents : regenerateArchivedCode112Documents;
+    const { results } = await regenerate(
       session.sourceProjectId,
       selectedKeys,
       outputDir,

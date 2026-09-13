@@ -21,6 +21,7 @@ function normalizeWasteEntry(entry) {
     name: String(entry.name ?? '').trim(),
     source: String(entry.source ?? '').trim(),
     composition: String(entry.composition ?? '').trim(),
+    density: String(entry.density ?? '').trim(),
   };
 }
 
@@ -71,6 +72,7 @@ export async function upsertWasteReference(entry, referencePath = DEFAULT_REFERE
       name: normalized.name || reference[index].name,
       source: normalized.source || reference[index].source,
       composition: normalized.composition || reference[index].composition,
+      density: normalized.density || reference[index].density,
     };
   }
   await saveWasteReference(reference, referencePath);
@@ -83,15 +85,16 @@ export function buildWasteReferencePageContent(reference) {
     '',
     'Справочная страница. Редактирование только через Цэпика.',
     '',
-    '| Код | Отход | Источник | Состав |',
-    '|---|---|---|---|',
+    '| Код | Отход | Источник | Состав | Плотность |',
+    '|---|---|---|---|---|',
   ];
   const sorted = [...reference].sort((a, b) => a.code.localeCompare(b.code, 'ru', { numeric: true }));
   for (const entry of sorted) {
     const name = entry.name || '—';
     const source = entry.source || '—';
     const composition = entry.composition || '—';
-    lines.push(`| ${entry.code} | ${name} | ${source} | ${composition} |`);
+    const density = entry.density || '—';
+    lines.push(`| ${entry.code} | ${name} | ${source} | ${composition} | ${density} |`);
   }
   return lines.join('\n');
 }
