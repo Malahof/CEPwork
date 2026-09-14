@@ -1,5 +1,6 @@
 const BIZINSPECT_SEARCH = 'https://bizinspect.by/search';
 const KARTOTEKA_SEARCH = 'https://kartoteka.by/search';
+const KARTOTEKA_COMPANY = 'https://kartoteka.by/company';
 
 const FETCH_TIMEOUT_MS = 10000;
 
@@ -114,17 +115,41 @@ function normalizeRegDate(value) {
   return text;
 }
 
+function pageContainsUnp(html, unp) {
+  return html && html.includes(unp);
+}
+
+async function tryFetchUrls(urls, unp, fetchImpl) {
+  for (const url of urls) {
+    console.log('[organizationParser] fetching', url);
+    const html = await fetchText(url, fetchImpl);
+    const contains = pageContainsUnp(html, unp);
+    console.log('[organizationParser]', url, { ok: Boolean(html), containsUnp: contains });
+    if (html && contains) return html;
+  }
+  return null;
+}
+
 export async function fetchOrganizationByUnp(unp, options = {}) {
   const fetchImpl = options.fetchImpl;
   const normalized = String(unp ?? '').replace(/\D/g, '');
   if (!normalized) return { sources: {}, errors: ['УНП не указан'] };
 
   const results = {};
-  const bizHtml = await fetchText(`${BIZINSPECT_SEARCH}?query=${encodeURIComponent(normalized)}&type=1`, fetchImpl);
+
+  const bizUrls = [
+    `${BIZINSPECT_SEARCH}?query=${encodeURIComponent(normalized)}&type=1`,
+    `${BIZINSPECT_SEARCH}?query=${encodeURIComponent(normalized)}`,
+  ];
+  const bizHtml = await tryFetchUrls(bizUrls, normalized, fetchImpl);
   const biz = bizHtml ? parseBizinspect(bizHtml, normalized) : null;
   if (biz) results.bizinspect = biz;
 
-  const kartHtml = await fetchText(`${KARTOTEKA_SEARCH}?query=${encodeURIComponent(normalized)}`, fetchImpl);
+  const kartUrls = [
+    `${KARTOTEKA_COMPANY}/${encodeURIComponent(normalized)}`,
+    `${KARTOTEKA_SEARCH}?query=${encodeURIComponent(normalized)}`,
+  ];
+  const kartHtml = await tryFetchUrls(kartUrls, normalized, fetchImpl);
   const kart = kartHtml ? parseKartoteka(kartHtml, normalized) : null;
   if (kart) results.kartoteka = kart;
 

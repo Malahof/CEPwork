@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { code112FallbackMessage, generate as generateCode112, getCode112Options, getCode112Question, readDocsSnapshot, syncCode112ProjectPages } from './generators/code112.js';
-import { generate as generateCode111, getCode111Options, getCode111Question } from './generators/code111.js';
+import { generate as generateCode111, getCode111Options, getCode111Question, syncCode111ProjectPages } from './generators/code111.js';
 import { getArchiveEditOptions, getArchiveEditQuestion, handleArchiveEdit } from './generators/archiveEdit.js';
 import {
   buildMemoryLoadedMessage,
@@ -226,6 +226,41 @@ export function createAgentProject(now = Date.now(), memory = null) {
 async function handleQuickLaunch(project, answer, now, context = {}) {
   console.log('[stateMachine] handleQuickLaunch called with answer:', answer);
   
+  // Text request: "создадим инструкцию для ОАО ..." or "инструкция для ..."
+  const instructionMatch = answer.match(/(?:создадим|создай)\s+инструкцию\s+(?:по\s+обращению\s+с\s+отходами\s+)?(?:для|под\s+названием)\s+(.+)$/iu)
+    ?? answer.match(/инструкция\s+(?:по\s+обращению\s+с\s+отходами\s+)?(?:для|под\s+названием)\s+(.+)$/iu)
+    ?? answer.match(/инструкция\s+(.+)$/iu);
+  if (instructionMatch) {
+    const organizationName = extractOrganizationNameFromText(instructionMatch[1]);
+    console.log('[stateMachine] Quick launch with instruction for:', organizationName);
+    if (organizationName) {
+      const packageDefinition = packageDefinitions.instruction;
+      project.status = 'package_selected';
+      project.currentNode = null;
+      project.packageCode = packageDefinition.code;
+      project.packageTitle = packageDefinition.title;
+      project.documents = packageDefinition.documents;
+
+      project.extractedData = project.extractedData || {};
+      project.extractedData.code111 = project.extractedData.code111 || {};
+      project.extractedData.code111.data = project.extractedData.code111.data || {};
+      project.extractedData.code111.data.название_организации_полное = organizationName;
+      project.extractedData.code111.data.название_организации = organizationName;
+      project.extractedData.code111.startedAt = project.extractedData.code111.startedAt || now;
+
+      addAgentMessage(project, buildPackageSelectedMessage(packageDefinition), now);
+      addAgentMessage(project, `Организация: ${organizationName}`, now);
+
+      const result = await generateCode111(project, { now, outputDir: context.outputDir, docsPath: context.docsPath });
+      const state = result.extractedData?.code111;
+      if (state) {
+        console.log('[stateMachine] Forcing code111 project page creation for quick launch');
+        await syncCode111ProjectPages(result, state, context.docsPath, now);
+      }
+      return result;
+    }
+  }
+
   // Direct code "111" - create project and ask for УНП
   if (answer === '111') {
     const packageDefinition = packageDefinitions.instruction;

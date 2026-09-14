@@ -116,7 +116,7 @@ async function handleUnp(project, state, answer, now, context) {
   state.data.УНП = unp;
   const { sources, discrepancies } = await fetchOrganizationByUnp(unp, { fetchImpl: context.fetchImpl });
   if (!Object.keys(sources).length) {
-    addAgentMessage(project, 'Не удалось получить данные с bizinspect.by и kartoteka.by. Переходим к ручному вводу.', now);
+    addAgentMessage(project, `Организация с УНП ${unp} не найдена на сайтах bizinspect.by и kartoteka.by. Введите данные вручную.`, now);
     state.step = 'orgManual';
     state.orgManualIndex = 0;
     askUser(project, `Введите значение поля «${ORG_MANUAL_FIELDS[0]}»`, [], now);
