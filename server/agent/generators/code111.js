@@ -65,6 +65,8 @@ function ensureGeneratorState(project, now) {
   const state = project.extractedData.code111;
   if (state && typeof state === 'object') {
     if (!state.startedAt) state.startedAt = now;
+    state.step = state.step ?? 'unp';
+    state.status = state.status ?? 'collecting';
     return state;
   }
   project.extractedData.code111 = {

@@ -4386,6 +4386,8 @@ async function performFinalGenerationAndArchive(project, state, userSources, out
   state.status = 'completed';
   project.status = 'completed';
   project.archivedAt = now;
+  project.reset = true;
+  console.log('[code112] Проект завершён и архивирован, диалог сброшен в начальное состояние');
   askUser(project, 'Документы сгенерированы и помещены в архив. Работа завершена.', [], now);
   project.updatedAt = now;
   return project;
@@ -5207,7 +5209,7 @@ async function promptNewWasteForReference(project, state, docsPath, now, resume 
   console.log('[code112] Отход отсутствует в справочнике:', candidate.code);
   askUser(
     project,
-    `Отход ${candidate.code} «${candidate.name ?? candidate.wasteName ?? 'без наименования'}» отсутствует в справочнике. Хотите добавить его в справочник с текущими значениями источника и состава?`,
+    `Отход ${candidate.code} «${candidate.name ?? candidate.wasteName ?? 'без наименования'}» отсутствует в справочнике. Хотите добавить его в справочник с текущими значениями источника, состава и плотности (если указана)?`,
     confirmationOptions(),
     now
   );
@@ -5226,6 +5228,7 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
       name: waste.name ?? waste.wasteName ?? '',
       source: waste.sourceName ?? waste.source ?? '',
       composition: waste.composition ?? '',
+      density: waste.density ?? '',
     };
     await upsertWasteReference(entry, state.referencePath);
     await syncWasteReferencePage(docsPath, state.referencePath);
@@ -5242,6 +5245,8 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
     askUser(project, buildWasteEditQuestion(state), [], now);
   } else if (state.pendingWasteImport) {
     askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
+  } else if (await promptNewWasteForReference(project, state, docsPath, now)) {
+    return project;
   } else {
     askUser(project, 'К чему теперь приступить?', menuOptions(), now);
   }

@@ -61,6 +61,7 @@ export interface AgentProject {
   packageTitle?: string;
   organizationName?: string;
   documents?: string[];
+  reset?: boolean;
 }
 
 export function isDocPage(item: TreeItem): item is DocPage {

@@ -142,6 +142,14 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
       packageCode: updated.packageCode ?? null,
       availableOptions: updated.availableOptions.map((option) => option.key),
     });
+    if (updated.reset) {
+      console.info('[ChatWizard] reset after completed project', { projectId: updated.id });
+      setProject(null);
+      setProjects((current) => current.filter((item) => item.id !== updated.id));
+      void fetchAgentProjects().then(setProjects).catch((error) => setError(error instanceof Error ? error.message : 'Не удалось обновить список проектов'));
+      void loadDocs({ silent: true });
+      return;
+    }
     setProject(updated);
     setProjects((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
   }
