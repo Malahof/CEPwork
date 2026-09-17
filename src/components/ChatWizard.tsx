@@ -9,7 +9,7 @@ import {
   uploadAgentFile,
 } from '../api/agentApi';
 import { useDocStore } from '../store/useDocStore';
-import type { AgentProject } from '../types';
+import type { AgentMessage, AgentProject } from '../types';
 
 interface ChatWizardProps {
   onGenerationStart?: () => void;
@@ -45,6 +45,7 @@ function renderMessageText(text: string) {
 export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
   const [project, setProject] = useState<AgentProject | null>(null);
   const [projects, setProjects] = useState<AgentProject[]>([]);
+  const [archiveMessages, setArchiveMessages] = useState<AgentMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSelecting, setIsSelecting] = useState(false);
@@ -55,17 +56,16 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
   const loadDocs = useDocStore((state) => state.loadDocs);
   const availableOptions = useMemo(() => project?.availableOptions ?? [], [project?.availableOptions]);
 
+  const welcomeMessage: AgentMessage = {
+    id: 'cepik-welcome',
+    role: 'agent' as const,
+    text: 'Здравствуйте. Я Цэпик, помогу подготовить экологические документы. Нажмите «Новый проект» или отправьте первое сообщение — я начну проект автоматически.',
+    createdAt: 0,
+  };
+
   const messages = useMemo(
-    () =>
-      project?.history ?? [
-        {
-          id: 'cepik-welcome',
-          role: 'agent' as const,
-          text: 'Здравствуйте. Я Цэпик, помогу подготовить экологические документы. Нажмите «Новый проект» или отправьте первое сообщение — я начну проект автоматически.',
-          createdAt: 0,
-        },
-      ],
-    [project]
+    () => project?.history ?? [...archiveMessages, welcomeMessage],
+    [project, archiveMessages, welcomeMessage]
   );
 
   useEffect(() => {
@@ -144,6 +144,9 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
     });
     if (updated.reset) {
       console.info('[ChatWizard] reset after completed project', { projectId: updated.id });
+      const agentHistory = (updated.history ?? []).filter((message) => message.role === 'agent');
+      const links = agentHistory.slice(-2);
+      if (links.length) setArchiveMessages(links);
       setProject(null);
       setProjects((current) => current.filter((item) => item.id !== updated.id));
       void fetchAgentProjects().then(setProjects).catch((error) => setError(error instanceof Error ? error.message : 'Не удалось обновить список проектов'));
