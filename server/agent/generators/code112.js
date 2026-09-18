@@ -7,7 +7,7 @@ import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../me
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { refreshDisposalReferences, resolveDisposalMethod } from '../disposalResolver.js';
-import { findWasteInReference, loadWasteReference, syncWasteReferencePage, upsertWasteReference } from '../wasteReference.js';
+import { addWasteToReference, findWasteInReference, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteReferencePage, upsertWasteReference } from '../wasteReference.js';
 import {
   WASTE_EXTRACTION_MODES,
   extractWasteDataFromText,
@@ -3203,6 +3203,10 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
       refreshAppendixContent: document.key === 'appendix',
     });
     const nextQuestion = document.key === 'appendix' ? buildNextWasteDetailsQuestion(state) : '';
+    if (document.key === 'appendix' && (await promptNewWasteForReference(project, state, docsPath, now, 'appendix'))) {
+      project.updatedAt = now;
+      return project;
+    }
     if (!nextQuestion && (await promptNewWasteForReference(project, state, docsPath, now))) {
       project.updatedAt = now;
       return project;
@@ -5202,7 +5206,7 @@ async function promptNewWasteForReference(project, state, docsPath, now, resume 
   const reference = await loadWasteReference(state.referencePath);
   const declined = new Set(state.referenceDeclined ?? []);
   const candidate = (Array.isArray(state.wastes) ? state.wastes : []).find(
-    (waste) => waste?.code && !findWasteInReference(reference, waste.code) && !declined.has(waste.code)
+    (waste) => waste?.code && !isWasteInReference(reference, waste.code) && !declined.has(waste.code)
   );
   if (!candidate) return false;
   state.pendingWasteReference = { code: candidate.code, resume };
@@ -5230,17 +5234,24 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
       composition: waste.composition ?? '',
       density: waste.density ?? '',
     };
-    await upsertWasteReference(entry, state.referencePath);
+    await addWasteToReference(entry, state.referencePath);
     await syncWasteReferencePage(docsPath, state.referencePath);
     addAgentMessage(project, `Отход ${entry.code} добавлен в справочник отходов.`, now);
   } else {
     if (!isYesAnswer(normalized) && pending?.code) {
-      state.referenceDeclined = [...new Set([...(state.referenceDeclined ?? []), pending.code])];
+      state.referenceDeclined = markWasteAsIgnored(state.referenceDeclined, pending.code);
     }
     addAgentMessage(project, 'Отход не добавлен в справочник.', now);
   }
 
-  if (pending?.resume === 'wasteEdit' && state.pendingWasteImport) {
+  if (pending?.resume === 'appendix') {
+    const nextQuestion = buildNextWasteDetailsQuestion(state);
+    if (nextQuestion) {
+      askUser(project, nextQuestion, documentWorkOptions(state, 'appendix'), now);
+    } else {
+      askUser(project, 'Данные для файла «Приложение к акту» сохранены. К чему теперь приступить?', menuOptions(), now);
+    }
+  } else if (pending?.resume === 'wasteEdit' && state.pendingWasteImport) {
     state.pendingWasteImport = { ...state.pendingWasteImport, stage: 'edit' };
     askUser(project, buildWasteEditQuestion(state), [], now);
   } else if (state.pendingWasteImport) {

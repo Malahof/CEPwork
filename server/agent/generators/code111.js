@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { parseDateToFormat, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { resolveDisposalMethod } from '../disposalResolver.js';
-import { findWasteInReference, loadWasteReference, syncWasteReferencePage, upsertWasteReference } from '../wasteReference.js';
+import { addWasteToReference, findWasteInReference, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteReferencePage } from '../wasteReference.js';
 import { buildOrganizationData, fetchOrganizationByUnp } from '../organizationParser.js';
 import { readDocsSnapshot, writeDocsSnapshot } from './code112.js';
 
@@ -16,6 +16,23 @@ const TEMPLATE_DIR = path.join(PROJECT_ROOT, 'templates', 'docx', 'instruction')
 export const code111Documents = [
   { key: 'instruction', label: 'Инструкция по обращению с отходами производства', fileName: 'instruktsiya-po-obrashcheniyu-s-otkhodami.docx' },
   { key: 'application', label: 'Заявление на согласование инструкции', fileName: 'zayavlenie-instruktsiya.docx' },
+];
+
+export const code111Sections = [
+  { key: 'section1', label: 'Раздел 1. Общие сведения', variables: [
+    'название_организации_полное', 'название_организации', 'юридический_адрес', 'адрес', 'УНП', 'дата_регистрации', 'орган_регистрации', 'вид_деятельности', 'Место'
+  ]},
+  { key: 'section2', label: 'Раздел 2. Ответственные лица', variables: ['positions'] },
+  { key: 'section3', label: 'Раздел 3. Общие положения', variables: [] },
+  { key: 'section4', label: 'Раздел 4. Требования к сбору, накоплению и хранению отходов', variables: ['wastes'] },
+  { key: 'section5', label: 'Раздел 5. Требования к размещению и обезвреживанию отходов', variables: ['wastes'] },
+  { key: 'section6', label: 'Раздел 6. Требования к транспортированию отходов', variables: ['wastes'] },
+  { key: 'section7', label: 'Раздел 7. Требования к учёту и контролю образования отходов', variables: [] },
+  { key: 'section8', label: 'Раздел 8. Порядок действий при чрезвычайных ситуациях', variables: [] },
+  { key: 'appendixA', label: 'Приложение А. Список должностей', variables: ['positions'] },
+  { key: 'appendixB', label: 'Приложение Б. Список отходов', variables: ['wastes'] },
+  { key: 'appendixC', label: 'Приложение В. Дополнительные документы', variables: ['statement.extraDocs'] },
+  { key: 'appendixD', label: 'Приложение Г. Лицензии/экспертиза', variables: ['conditionalBlocks'] },
 ];
 
 const DEFAULT_POSITIONS = ['Директор (заместитель директора)', 'Главный бухгалтер', 'Инженер по охране окружающей среды', 'Руководители структурных подразделений'];
@@ -338,6 +355,7 @@ async function handleWastes(project, state, answer, now, context) {
   }
   const reference = await loadWasteReference(state.referencePath);
   const newWastes = [];
+  const declined = new Set(state.referenceDeclined ?? []);
   for (const row of rows) {
     const ref = findWasteInReference(reference, row.code);
     const waste = {
@@ -350,7 +368,7 @@ async function handleWastes(project, state, answer, now, context) {
       unit: 'т',
     };
     state.wastes.push(waste);
-    if (!ref) newWastes.push(waste);
+    if (!ref && !declined.has(row.code)) newWastes.push(waste);
   }
   // Default определение + обращение
   for (const waste of state.wastes) {
@@ -420,7 +438,7 @@ async function handlePendingReference(project, state, answer, now, ctx) {
     if (parts[0]) pending.fields.source = parts[0];
     if (parts[1]) pending.fields.composition = parts[1];
     if (parts[2]) pending.fields.density = parts[2];
-    await upsertWasteReference({ code: pending.code, name: pending.name, ...pending.fields }, state.referencePath);
+    await addWasteToReference({ code: pending.code, name: pending.name, ...pending.fields }, state.referencePath);
     await syncWasteReferencePage(ctx.docsPath ?? DEFAULT_DOCS_PATH, state.referencePath);
     addAgentMessage(project, `Отход ${pending.code} добавлен в справочник.`, now);
     nextReference(project, state, pending, now);
@@ -432,6 +450,7 @@ async function handlePendingReference(project, state, answer, now, ctx) {
     return;
   }
   addAgentMessage(project, `Отход ${pending.code} не будет добавлен в справочник.`, now);
+  state.referenceDeclined = markWasteAsIgnored(state.referenceDeclined, pending.code);
   nextReference(project, state, pending, now);
 }
 
@@ -663,8 +682,20 @@ function menuOptions(state) {
   return opts;
 }
 
+function sectionForStep(step) {
+  const map = {
+    unp: 'section1', org: 'section1', orgManual: 'section1', conditional: 'section1',
+    addresses: 'section1', positions: 'section2', manager: 'section2',
+    wastes: 'section4', wasteDetails: 'section4', pod10: 'section7', report: 'section7', ready: 'section1'
+  };
+  return map[step] || 'section1';
+}
+
 function askMenu(project, state, now, prefix = '') {
-  const question = `${prefix ? prefix + '\n' : ''}К чему приступить?`;
+  const sectionKey = sectionForStep(state.step);
+  const section = code111Sections.find((s) => s.key === sectionKey) ?? code111Sections[0];
+  const question = `${prefix ? prefix + '\n' : ''}Работаем над «${section.label}». К чему приступить?`;
+  syncCode111ProjectPages(project, state, DEFAULT_DOCS_PATH, now, { activateSection: sectionKey }).catch((e) => console.error('[code111] sync project pages failed', e));
   askUser(project, question, menuOptions(state), now);
 }
 
@@ -762,7 +793,47 @@ async function archiveProjectInDocs(project, state, docsPath, now) {
   await writeDocsSnapshot(docsPath, snapshot);
 }
 
-export async function syncCode111ProjectPages(project, state, docsPath, now) {
+function getVariableDisplay(state, variable) {
+  if (variable === 'positions') {
+    const positions = Array.isArray(state.positions) ? state.positions : [];
+    if (!positions.length) return '_нет данных_';
+    return positions.map((p) => `- ${p}`).join('\n');
+  }
+  if (variable === 'wastes') {
+    const wastes = Array.isArray(state.wastes) ? state.wastes : [];
+    if (!wastes.length) return '_нет данных_';
+    return wastes.map((w) => `- ${w.code} — ${w.name || w.wasteName || '—'}`).join('\n');
+  }
+  if (variable === 'statement.extraDocs') {
+    const docs = Array.isArray(state.statement?.extraDocs) ? state.statement.extraDocs : [];
+    if (!docs.length) return '_нет данных_';
+    return docs.map((d) => `- ${d}`).join('\n');
+  }
+  if (variable === 'conditionalBlocks') {
+    const keys = Object.keys(state.conditionalBlocks ?? {});
+    if (!keys.length) return '_нет данных_';
+    return keys.filter((k) => state.conditionalBlocks[k]).map((k) => `- ${k}: Да`).join('\n');
+  }
+  return state.data?.[variable] || '_нет данных_';
+}
+
+function buildSectionContent(section, state) {
+  const lines = [`# ${section.label}`];
+  if (!section.variables.length) {
+    lines.push('_В этом разделе данные вводятся в чате._');
+  } else {
+    for (const variable of section.variables) {
+      const display = getVariableDisplay(state, variable);
+      const label = variable === 'positions' ? 'Ответственные лица (должности)' : variable === 'wastes' ? 'Отходы' : variable === 'statement.extraDocs' ? 'Дополнительные документы' : variable;
+      lines.push(`**${label}**`);
+      lines.push(display);
+      lines.push('');
+    }
+  }
+  return lines.join('\n');
+}
+
+export async function syncCode111ProjectPages(project, state, docsPath, now, { activateSection = null } = {}) {
   const snapshot = await readDocsSnapshot(docsPath);
   const orgName = state.data.название_организации || 'Новый проект';
   const projectFolderId = `agent-${project.id}`;
@@ -784,6 +855,32 @@ export async function syncCode111ProjectPages(project, state, docsPath, now) {
         updatedAt: now,
       });
     }
+  }
+  for (const section of code111Sections) {
+    const pageId = `agent-${project.id}-code111-${section.key}`;
+    const content = buildSectionContent(section, state);
+    const existing = snapshot.pages.find((p) => p.id === pageId);
+    if (existing) {
+      existing.title = section.label;
+      existing.content = content;
+      existing.updatedAt = now;
+    } else {
+      snapshot.pages.push({
+        id: pageId,
+        title: section.label,
+        content,
+        parentId: workFolderId,
+        order: code111Documents.length + code111Sections.indexOf(section),
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    if (activateSection === section.key) {
+      snapshot.activePageId = pageId;
+    }
+  }
+  if (activateSection && !snapshot.activePageId) {
+    snapshot.activePageId = `agent-${project.id}-code111-${activateSection}`;
   }
   await writeDocsSnapshot(docsPath, snapshot);
 }
