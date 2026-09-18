@@ -81,14 +81,17 @@ function parseBizinspect(html, unp) {
   if (!html) return null;
   logHtml('bizinspect parse input', html);
   const legalName = findItemProp(html, 'legalName') || findItemProp(html, 'name');
-  const shortName = findItemProp(html, 'alternateName') || legalName;
+  const shortNameMatch = html.match(/<td[^>]*>\s*Сокращ[её]нное[^<]*<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>/i);
+  const shortName = shortNameMatch ? stripTags(shortNameMatch[1]).replace(/\s+/g, ' ').trim() : legalName;
   const foundingDate = html.match(/itemprop=foundingDate[^>]*datetime=([\d-]+)/)?.[1]
     || extractField(html, [/(?:Дата регистрации|дата регистрации)[^0-9]{0,60}(\d{2}\.\d{2}\.\d{4})/i]);
   const registrationBody = extractField(html, [
-    /зарегистрирован[а-я]*\s+([^<,;.]+(?:комитет|исполком|инспекция|райисполком|горисполком)[^<,;.]*)/i,
+
+    /Текущий орган уч[её]та<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
     /(?:орган регистрации|зарегистрировавший орган)[^:]{0,60}?([^.\n<]+(?:комитет|исполком|инспекция)[^.\n<]+)/i,
   ]);
   const activity = extractField(html, [
+    /Наименование основного вида деятельности по ОКЭД<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
     /(?:основн\w+ вид деятельности|вид деятельности)[^:]{0,20}:\s*([^<\n]+)/i,
   ]);
   const text = stripTags(html);
@@ -206,11 +209,11 @@ export async function fetchOrganizationByUnp(unp, options = {}) {
 
   const results = {};
 
-  const biz = await fetchBizinspect(normalized, fetchImpl);
-  if (biz) results.bizinspect = biz;
-
   const kart = await fetchKartoteka(normalized, fetchImpl);
   if (kart) results.kartoteka = kart;
+
+  const biz = await fetchBizinspect(normalized, fetchImpl);
+  if (biz) results.bizinspect = biz;
 
   const fields = ['fullName', 'shortName', 'legalAddress', 'registrationDate', 'registrationBody', 'activity'];
   const discrepancies = [];

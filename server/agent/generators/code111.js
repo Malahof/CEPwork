@@ -44,6 +44,10 @@ function isYesAnswer(a) {
   return /^(да|yes|ага|конечно|подтверждаю|подтвердить)$/i.test(a);
 }
 
+function isNoAnswer(a) {
+  return /^(нет|no|не|неа)$/i.test(a);
+}
+
 function ensureFolder(snapshot, folder) {
   const existing = snapshot.folders.find((f) => f.id === folder.id);
   if (existing) { Object.assign(existing, folder); return existing; }
@@ -67,6 +71,13 @@ function ensureGeneratorState(project, now) {
     if (!state.startedAt) state.startedAt = now;
     state.step = state.step ?? 'unp';
     state.status = state.status ?? 'collecting';
+    state.data = state.data ?? {};
+    state.addresses = state.addresses ?? [];
+    state.positions = Array.isArray(state.positions) ? state.positions : [...DEFAULT_POSITIONS];
+    state.wastes = state.wastes ?? [];
+    state.conditionalBlocks = state.conditionalBlocks ?? {};
+    state.statement = state.statement ?? { extraDocs: [] };
+    state.files = state.files ?? {};
     return state;
   }
   project.extractedData.code111 = {
@@ -141,7 +152,7 @@ async function handleUnp(project, state, answer, now, context) {
     );
     return;
   }
-  const source = sources.bizinspect ?? sources.kartoteka;
+  const source = sources.kartoteka ?? sources.bizinspect;
   Object.assign(state.data, buildOrganizationData(source));
   askOrgConfirm(project, state, now);
 }
@@ -169,8 +180,8 @@ function handleOrgChoice(project, state, answer, now) {
     askUser(project, `Введите значение поля «${ORG_MANUAL_FIELDS[0]}»`, [], now);
     return;
   }
-  const source = a === 'kartoteka' ? state.orgSources?.kartoteka : state.orgSources?.bizinspect;
-  Object.assign(state.data, buildOrganizationData(source ?? state.orgSources?.bizinspect ?? state.orgSources?.kartoteka));
+  const source = a === 'bizinspect' ? state.orgSources?.bizinspect : state.orgSources?.kartoteka;
+  Object.assign(state.data, buildOrganizationData(source ?? state.orgSources?.kartoteka ?? state.orgSources?.bizinspect));
   askOrgConfirm(project, state, now);
 }
 
@@ -256,7 +267,13 @@ function askNextConditional(project, state, now) {
 }
 
 function handleConditional(project, state, answer, now) {
-  state.conditionalBlocks[state.pendingConditional] = isYesAnswer(answer) || normalizeAnswer(answer) === 'yes';
+  const a = normalizeAnswer(answer);
+  if (!isYesAnswer(a) && !isNoAnswer(a) && a !== 'yes' && a !== 'no') {
+    const current = CONDITIONAL_BLOCKS.find((b) => b.key === state.pendingConditional);
+    askUser(project, `Пожалуйста, ответьте «Да» или «Нет». ${current ? current.question : 'Продолжить?'}`, [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }], now);
+    return;
+  }
+  state.conditionalBlocks[state.pendingConditional] = isYesAnswer(answer) || a === 'yes';
   state.pendingConditional = null;
   state.conditionalIndex += 1;
   askNextConditional(project, state, now);

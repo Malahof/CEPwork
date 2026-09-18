@@ -59,6 +59,26 @@ export function findWasteInReference(reference, code) {
   return reference.find((entry) => entry.code === normalizedCode) ?? null;
 }
 
+export function isWasteInReference(reference, code) {
+  const found = findWasteInReference(reference, code);
+  console.log('[wasteReference] Проверка отхода', code, { found: Boolean(found) });
+  return Boolean(found);
+}
+
+export async function addWasteToReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
+  console.log('[wasteReference] Запрос на добавление отхода', entry.code);
+  const result = await upsertWasteReference(entry, referencePath);
+  console.log('[wasteReference] Отход добавлен', entry.code);
+  return result;
+}
+
+export function markWasteAsIgnored(ignored, code) {
+  const set = new Set(ignored ?? []);
+  set.add(code);
+  console.log('[wasteReference] Отход проигнорирован', code);
+  return [...set];
+}
+
 export async function upsertWasteReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
   const normalized = normalizeWasteEntry(entry);
   if (!normalized) return null;
