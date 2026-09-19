@@ -2028,29 +2028,25 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
 
   console.log('[code112] Applying waste formation data', { fileName: upload.fileName, rows: rows.length });
 
-  const compositionRef = await loadCompositionReference();
-  const updatedRef = [...compositionRef];
+  const reference = await loadWasteReference(state.referencePath);
 
   for (const row of rows) {
     const waste = state.wastes.find((w) => w.code === row.code);
     if (!waste) continue;
 
     if (row.composition?.length) {
-      const names = formatComposition(row.composition);
-      const percents = formatCompositionPercent(row.composition);
-      if (names) waste.composition = names;
-      if (percents) waste.compositionPercent = percents;
-
-      const refIndex = updatedRef.findIndex((r) => r.code === row.code);
-      const refEntry = {
-        code: row.code,
-        name: waste.name,
-        components: row.composition,
-      };
-      if (refIndex >= 0) {
-        updatedRef[refIndex] = refEntry;
+      const ref = getWasteFromReference(reference, waste.code);
+      if (ref?.composition?.trim()) {
+        waste.composition = ref.composition;
+        waste.compositionPercent = '−';
+        console.log('[code112] Отход', waste.code, 'состав из файла проигнорирован (в справочнике уже есть)');
       } else {
-        updatedRef.push(refEntry);
+        const names = formatComposition(row.composition);
+        const percents = formatCompositionPercent(row.composition);
+        if (names) waste.composition = names;
+        if (percents) waste.compositionPercent = percents;
+        console.log('[code112] Отход', waste.code, 'состав взят из файла (в справочнике отсутствовал)');
+        await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: waste.composition, density: waste.density || '' }, state.referencePath);
       }
     }
 
@@ -2059,7 +2055,7 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
     }
   }
 
-  await saveCompositionReference(updatedRef);
+  await syncWasteReferencePage(docsPath, state.referencePath);
 
   state.files.wasteFormation.filledFromFile = true;
   state.files.wasteFormation.status = 'in_progress';
@@ -2148,6 +2144,7 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     const entry = { code: waste.code, name: waste.name, components };
     if (idx >= 0) ref[idx] = entry; else ref.push(entry);
     await saveCompositionReference(ref);
+    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: waste.composition, density: waste.density || '' }, state.referencePath);
   }
 
   comp.index++;
@@ -2155,6 +2152,7 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     state.awaitingWasteFormationComposition = null;
     const started = await ensureWasteFormationData(project, state, docsPath, now);
     if (!started) {
+      await syncWasteReferencePage(docsPath, state.referencePath);
       await syncCode112ProjectPages(project, state, docsPath, now, { activateDocumentKey: 'wasteFormation', refreshWasteFormationContent: true });
       askUser(project, 'Состав всех отходов заполнен. К чему теперь приступить?', documentWorkOptions(state, 'wasteFormation'), now);
     }
@@ -2242,7 +2240,20 @@ async function ensureWasteFormationData(project, state, docsPath, now) {
     return false;
   }
 
-  const missingComposition = state.wastes.filter((w) => !w.composition);
+  const reference = await loadWasteReference(state.referencePath);
+  const missingComposition = [];
+  for (const waste of state.wastes) {
+    if (waste.composition) continue;
+    const ref = getWasteFromReference(reference, waste.code);
+    if (ref?.composition?.trim()) {
+      waste.composition = ref.composition;
+      waste.compositionPercent = '−';
+      console.log('[code112] Отход', waste.code, 'состав взят из справочника');
+    } else {
+      missingComposition.push(waste);
+    }
+  }
+
   if (missingComposition.length && !state.awaitingWasteFormationComposition) {
     console.log('[code112] ensureWasteFormationData: missing composition for', missingComposition.map((w) => w.code).join(', '));
     state.awaitingWasteFormationComposition = {
