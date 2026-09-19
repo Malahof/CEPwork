@@ -1707,6 +1707,44 @@ function formatCompositionPercent(components) {
   return components.map((c) => c.percentage ?? c.percent).join('<br>');
 }
 
+function formatCompositionForReference(components) {
+  return components.map((c) => c.name).join('; ');
+}
+
+function formatCompositionPercentForReference(components) {
+  return components.map((c) => c.percentage ?? c.percent).join('; ');
+}
+
+function parseReferenceComposition(composition, compositionPercent) {
+  if (!composition?.trim()) return null;
+  if (composition.trim() === 'Сложнокомпонентный состав') {
+    return [{ name: 'Сложнокомпонентный состав', percent: '' }];
+  }
+  const names = composition.split(';').map((s) => s.trim()).filter(Boolean);
+  const percents = (compositionPercent || '').split(';').map((s) => s.trim());
+  return names.map((name, i) => ({ name, percent: percents[i] || '' }));
+}
+
+function applyReferenceCompositionToWaste(waste, ref) {
+  if (!ref?.composition?.trim() || !ref?.compositionPercent?.trim()) return false;
+  if (ref.composition.trim() === 'Сложнокомпонентный состав') {
+    waste.composition = 'Сложнокомпонентный состав';
+    waste.compositionPercent = '−';
+    waste.compositionComponents = [];
+    console.log('[code112] Отход', waste.code, 'состав и состав % взяты из справочника (сложнокомпонентный)');
+    return true;
+  }
+  const components = parseReferenceComposition(ref.composition, ref.compositionPercent);
+  if (components && components.length) {
+    waste.composition = formatComposition(components);
+    waste.compositionPercent = formatCompositionPercent(components);
+    waste.compositionComponents = components;
+    console.log('[code112] Отход', waste.code, 'состав и состав % взяты из справочника, значение из файла проигнорировано');
+    return true;
+  }
+  return false;
+}
+
 let compositionReferenceCache = null;
 
 async function loadCompositionReference() {
@@ -2036,17 +2074,18 @@ async function applyWasteFormationFileData(project, state, uploadIndex, docsPath
 
     if (row.composition?.length) {
       const ref = getWasteFromReference(reference, waste.code);
-      if (ref?.composition?.trim()) {
-        waste.composition = ref.composition;
-        waste.compositionPercent = '−';
-        console.log('[code112] Отход', waste.code, 'состав из файла проигнорирован (в справочнике уже есть)');
+      if (applyReferenceCompositionToWaste(waste, ref)) {
+        console.log('[code112] Отход', waste.code, 'состав и состав % взяты из справочника, значение из файла проигнорировано');
       } else {
         const names = formatComposition(row.composition);
         const percents = formatCompositionPercent(row.composition);
         if (names) waste.composition = names;
         if (percents) waste.compositionPercent = percents;
-        console.log('[code112] Отход', waste.code, 'состав взят из файла (в справочнике отсутствовал)');
-        await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: waste.composition, density: waste.density || '' }, state.referencePath);
+        waste.compositionComponents = row.composition;
+        const refComposition = formatCompositionForReference(row.composition);
+        const refCompositionPercent = formatCompositionPercentForReference(row.composition);
+        console.log('[code112] Отход', waste.code, 'состав и состав % взяты из файла (в справочнике отсутствовал)');
+        await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: refComposition, compositionPercent: refCompositionPercent, density: waste.density || '' }, state.referencePath);
       }
     }
 
@@ -2129,6 +2168,8 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     waste.composition = 'Сложнокомпонентный состав';
     waste.compositionPercent = '−';
     waste.compositionComponents = [];
+    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: 'Сложнокомпонентный состав', compositionPercent: '−', density: waste.density || '' }, state.referencePath);
+    console.log('[wasteReference] Отход', waste.code, 'состав и состав % сохранены в справочник');
   } else {
     const components = parseCompositionInput(answer);
     if (!components) {
@@ -2139,12 +2180,15 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     waste.composition = formatComposition(components);
     waste.compositionPercent = formatCompositionPercent(components);
     waste.compositionComponents = components;
+    const refComposition = formatCompositionForReference(components);
+    const refCompositionPercent = formatCompositionPercentForReference(components);
     const ref = await loadCompositionReference();
     const idx = ref.findIndex((r) => r.code === waste.code);
     const entry = { code: waste.code, name: waste.name, components };
     if (idx >= 0) ref[idx] = entry; else ref.push(entry);
     await saveCompositionReference(ref);
-    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: waste.composition, density: waste.density || '' }, state.referencePath);
+    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: refComposition, compositionPercent: refCompositionPercent, density: waste.density || '' }, state.referencePath);
+    console.log('[wasteReference] Отход', waste.code, 'состав и состав % сохранены в справочник');
   }
 
   comp.index++;
@@ -2245,10 +2289,8 @@ async function ensureWasteFormationData(project, state, docsPath, now) {
   for (const waste of state.wastes) {
     if (waste.composition) continue;
     const ref = getWasteFromReference(reference, waste.code);
-    if (ref?.composition?.trim()) {
-      waste.composition = ref.composition;
-      waste.compositionPercent = '−';
-      console.log('[code112] Отход', waste.code, 'состав взят из справочника');
+    if (ref?.composition?.trim() && ref?.compositionPercent?.trim()) {
+      applyReferenceCompositionToWaste(waste, ref);
     } else {
       missingComposition.push(waste);
     }

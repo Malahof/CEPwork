@@ -21,6 +21,7 @@ function normalizeWasteEntry(entry) {
     name: String(entry.name ?? '').trim(),
     source: String(entry.source ?? '').trim(),
     composition: String(entry.composition ?? '').trim(),
+    compositionPercent: String(entry.compositionPercent ?? '').trim(),
     density: String(entry.density ?? '').trim(),
   };
 }
@@ -82,7 +83,10 @@ export function markWasteAsIgnored(ignored, code) {
 export function getWasteFromReference(reference, code) {
   const found = findWasteInReference(reference, code);
   if (found) {
-    console.log('[wasteReference] Отход', code, 'найден в справочнике:', { source: found.source, composition: found.composition, density: found.density });
+    if (found.composition?.trim() && !found.compositionPercent?.trim()) {
+      console.warn('[wasteReference] Отход', code, 'отсутствует compositionPercent');
+    }
+    console.log('[wasteReference] Отход', code, 'найден в справочнике:', { source: found.source, composition: found.composition, compositionPercent: found.compositionPercent, density: found.density });
   } else {
     console.log('[wasteReference] Отход', code, 'отсутствует в справочнике, запрашиваем ввод');
   }
@@ -92,7 +96,14 @@ export function getWasteFromReference(reference, code) {
 export function getMissingFields(reference, code, fields = ['source', 'composition', 'density']) {
   const found = getWasteFromReference(reference, code);
   if (!found) return fields;
-  return fields.filter((field) => !found[field]?.trim());
+  const missing = fields.filter((field) => !found[field]?.trim());
+  const hasComposition = fields.includes('composition') && !missing.includes('composition');
+  const hasPercent = fields.includes('composition') && !missing.includes('compositionPercent') && found.compositionPercent?.trim();
+  if (fields.includes('composition') && (!hasComposition || !hasPercent)) {
+    if (!missing.includes('composition')) missing.push('composition');
+    if (!missing.includes('compositionPercent')) missing.push('compositionPercent');
+  }
+  return missing;
 }
 
 export async function upsertWasteInReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
@@ -107,7 +118,7 @@ export async function upsertWasteInReference(entry, referencePath = DEFAULT_REFE
   } else {
     const existing = reference[index];
     const merged = { code: normalized.code };
-    for (const field of ['name', 'source', 'composition', 'density']) {
+    for (const field of ['name', 'source', 'composition', 'compositionPercent', 'density']) {
       merged[field] = (normalized[field]?.trim() ? normalized[field] : existing[field]) || '';
       if (normalized[field]?.trim() && !existing[field]?.trim()) updatedCount += 1;
     }
@@ -132,6 +143,7 @@ export async function syncWasteFromState(state, docsPath, referencePath = DEFAUL
       name: waste.name || waste.wasteName || '',
       source: waste.source || waste.sourceName || '',
       composition: waste.composition || '',
+      compositionPercent: waste.compositionPercent || '',
       density: waste.density || '',
     };
     const hasAny = entry.source || entry.composition || entry.density;
@@ -158,16 +170,17 @@ export function buildWasteReferencePageContent(reference) {
     '',
     'Справочная страница. Редактирование только через Цэпика.',
     '',
-    '| Код | Отход | Источник | Состав | Плотность |',
-    '|---|---|---|---|---|',
+    '| Код | Отход | Источник | Состав | Состав, % | Плотность |',
+    '|---|---|---|---|---|---|',
   ];
   const sorted = [...reference].sort((a, b) => a.code.localeCompare(b.code, 'ru', { numeric: true }));
   for (const entry of sorted) {
     const name = entry.name || '—';
     const source = entry.source || '—';
     const composition = entry.composition || '—';
+    const compositionPercent = entry.compositionPercent || '—';
     const density = entry.density || '—';
-    lines.push(`| ${entry.code} | ${name} | ${source} | ${composition} | ${density} |`);
+    lines.push(`| ${entry.code} | ${name} | ${source} | ${composition} | ${compositionPercent} | ${density} |`);
   }
   return lines.join('\n');
 }
