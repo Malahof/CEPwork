@@ -5340,9 +5340,9 @@ function confirmationOptions() {
 function disposalConfirmationOptions(waste) {
   if (waste && (waste.code === '9120400' || !waste.suggestedHandling)) {
     return [
-      { key: 'sorting', label: 'сортировка' },
-      { key: 'reuse', label: 'использование' },
-      { key: 'burial', label: 'захоронение' },
+      { key: 'sorting', label: 'Сортировка' },
+      { key: 'reuse', label: 'Использование' },
+      { key: 'burial', label: 'Захоронение' },
     ];
   }
   return [

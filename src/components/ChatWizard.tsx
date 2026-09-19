@@ -1,3 +1,36 @@
+const OPTION_LABELS: Record<string, string> = {
+  yes: 'Да',
+  no: 'Нет',
+  cancel: 'Отмена',
+  confirm: 'Подтвердить',
+  skip: 'Пропустить',
+  manual: 'Ввести вручную',
+  edit: 'Изменить',
+  done: 'Готово',
+  pause: 'Остановиться и продолжить позже',
+  back: 'Назад',
+  generateAll: 'Сгенерировать DOCX',
+  generateDocs: 'Сгенерировать DOCX',
+  archive: 'Архив (ZIP)',
+  separate: 'По отдельности',
+  titleAct: 'Титул акта',
+  appendix: 'Приложение к акту',
+  sources: 'Источники образования',
+  wasteFormation: 'Сведения о количестве',
+  measures: 'Перечень мероприятий',
+  useUploadedFile: 'Заполнить из загруженного файла',
+  wasteList: 'Список отходов',
+  quantities: 'Годовые количества',
+  normatives: 'Нормативы',
+  handling: 'Способы обращения',
+  bizinspect: 'bizinspect.by',
+  kartoteka: 'kartoteka.by',
+};
+
+function getOptionLabel(option: { key: string; label: string }) {
+  return OPTION_LABELS[option.key] ?? option.label;
+}
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Bot, CheckCircle2, FolderClock, Paperclip, Play, RefreshCw, Send, Sparkles } from 'lucide-react';
@@ -363,7 +396,7 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
                   disabled={isSelecting || isFileUploading}
                   onClick={() => void handleSelect(option.key)}
                 >
-                  {option.label}
+                  {getOptionLabel(option)}
                 </button>
               ))}
             </div>
