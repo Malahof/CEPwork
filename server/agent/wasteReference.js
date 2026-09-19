@@ -229,5 +229,5 @@ export async function syncWasteReferencePage(docsPath, referencePath = DEFAULT_R
   }
 
   await writeDocsSnapshot(docsPath, snapshot);
-  console.log('[wasteReference] Справочник отходов синхронизирован', { count: reference.length });
+  console.log('[wasteReference] Страница справочника обновлена:', { count: reference.length });
 }

@@ -5275,6 +5275,7 @@ async function syncWasteDetailsToReference(project, state, docsPath, now) {
       name: waste.name ?? waste.wasteName ?? '',
       source: waste.sourceName ?? waste.source ?? '',
       composition: waste.composition ?? '',
+      compositionPercent: waste.compositionPercent ?? '',
       density: waste.density ?? '',
     };
     if (entry.source || entry.composition || entry.density) {
@@ -5302,6 +5303,7 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
       name: waste.name ?? waste.wasteName ?? '',
       source: waste.sourceName ?? waste.source ?? '',
       composition: waste.composition ?? '',
+      compositionPercent: waste.compositionPercent ?? '',
       density: waste.density ?? '',
     };
     await addWasteToReference(entry, state.referencePath);
