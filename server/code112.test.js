@@ -648,40 +648,4 @@ test('code112 offers generation buttons with cancel and generates DOCX without a
   assert.equal(projectFolder.parentId, 'in-progress');
 });
 
-test('code112 offers to add a new waste to the reference directory', async () => {
-  const project = {
-    id: 'code112-waste-reference',
-    packageCode: '112',
-    packageTitle: 'Акт инвентаризации',
-    extractedData: {},
-    history: [],
-  };
-  const docsPath = path.join(tempDir, 'waste-reference-docs.json');
-  const referencePath = path.join(tempDir, 'waste_reference.json');
 
-  await generate(project, { now: 1, outputDir: tempDir, docsPath, memory: null, referencePath });
-  await generate(project, { answer: 'ООО Фермент', now: 2, outputDir: tempDir, docsPath, memory: null, referencePath });
-
-  await generate(project, {
-    answer: '9120400;Тестовый отход;неопасные;1;т;захоронение;Источник;твердое',
-    now: 3,
-    outputDir: tempDir,
-    docsPath,
-    memory: null,
-    referencePath,
-  });
-  assert.match(project.history.at(-1).text, /отсутствует в справочнике/);
-  assert.equal(project.extractedData.code112.pendingWasteReference.code, '9120400');
-
-  await generate(project, { answer: 'да', now: 4, outputDir: tempDir, docsPath, memory: null, referencePath });
-  const reference = JSON.parse(await readFile(referencePath, 'utf8'));
-  assert.equal(reference[0].code, '9120400');
-  assert.equal(reference[0].name, 'Тестовый отход');
-
-  const snapshot = JSON.parse(await readFile(docsPath, 'utf8'));
-  assert.ok(snapshot.folders.some((folder) => folder.id === 'references' && folder.title === 'Справочники'));
-  const referencePage = snapshot.pages.find((page) => page.id === 'waste-reference');
-  assert.ok(referencePage.isTemplate);
-  assert.match(referencePage.content, /9120400/);
-  assert.match(project.history.at(-1).text, /К чему теперь приступить/);
-});

@@ -79,24 +79,77 @@ export function markWasteAsIgnored(ignored, code) {
   return [...set];
 }
 
-export async function upsertWasteReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
+export function getWasteFromReference(reference, code) {
+  const found = findWasteInReference(reference, code);
+  if (found) {
+    console.log('[wasteReference] Отход', code, 'найден в справочнике:', { source: found.source, composition: found.composition, density: found.density });
+  } else {
+    console.log('[wasteReference] Отход', code, 'отсутствует в справочнике, запрашиваем ввод');
+  }
+  return found;
+}
+
+export function getMissingFields(reference, code, fields = ['source', 'composition', 'density']) {
+  const found = getWasteFromReference(reference, code);
+  if (!found) return fields;
+  return fields.filter((field) => !found[field]?.trim());
+}
+
+export async function upsertWasteInReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
   const normalized = normalizeWasteEntry(entry);
   if (!normalized) return null;
   const reference = await loadWasteReference(referencePath);
   const index = reference.findIndex((item) => item.code === normalized.code);
+  let updatedCount = 0;
   if (index === -1) {
     reference.push(normalized);
+    updatedCount = 4;
   } else {
-    reference[index] = {
-      code: normalized.code,
-      name: normalized.name || reference[index].name,
-      source: normalized.source || reference[index].source,
-      composition: normalized.composition || reference[index].composition,
-      density: normalized.density || reference[index].density,
-    };
+    const existing = reference[index];
+    const merged = { code: normalized.code };
+    for (const field of ['name', 'source', 'composition', 'density']) {
+      merged[field] = (normalized[field]?.trim() ? normalized[field] : existing[field]) || '';
+      if (normalized[field]?.trim() && !existing[field]?.trim()) updatedCount += 1;
+    }
+    reference[index] = merged;
   }
   await saveWasteReference(reference, referencePath);
+  console.log('[wasteReference] Отход', normalized.code, 'обновлён в справочнике:', { updatedCount });
   return normalized;
+}
+
+export async function upsertWasteReference(entry, referencePath = DEFAULT_REFERENCE_PATH) {
+  return upsertWasteInReference(entry, referencePath);
+}
+
+export async function syncWasteFromState(state, docsPath, referencePath = DEFAULT_REFERENCE_PATH) {
+  const wastes = Array.isArray(state.wastes) ? state.wastes : [];
+  let saved = 0;
+  let skipped = 0;
+  for (const waste of wastes) {
+    const entry = {
+      code: waste.code,
+      name: waste.name || waste.wasteName || '',
+      source: waste.source || waste.sourceName || '',
+      composition: waste.composition || '',
+      density: waste.density || '',
+    };
+    const hasAny = entry.source || entry.composition || entry.density;
+    if (!hasAny) {
+      skipped += 1;
+      continue;
+    }
+    await upsertWasteInReference(entry, referencePath);
+    saved += 1;
+  }
+  await syncWasteReferencePage(docsPath, referencePath);
+  console.log('[wasteReference] Синхронизация в справочник из состояния:', { saved, skipped });
+  return { saved, skipped };
+}
+
+export function isForceReferenceCommand(answer) {
+  const a = String(answer ?? '').toLowerCase();
+  return /(?:внес|добав|обнов|сохран).*(?:данн(?:ых|ые|ой|е)|состав[оы]?).*(?:в\s+)?справочник|(?:добав|внес|сохран|обнов).*(?:в\s+)?справочник/.test(a);
 }
 
 export function buildWasteReferencePageContent(reference) {

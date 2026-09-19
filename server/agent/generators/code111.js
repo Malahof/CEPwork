@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { parseDateToFormat, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { resolveDisposalMethod } from '../disposalResolver.js';
-import { addWasteToReference, findWasteInReference, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteReferencePage } from '../wasteReference.js';
+import { addWasteToReference, findWasteInReference, getWasteFromReference, getMissingFields, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference } from '../wasteReference.js';
 import { buildOrganizationData, fetchOrganizationByUnp } from '../organizationParser.js';
 import { readDocsSnapshot, writeDocsSnapshot, readWasteClassifierText, findHazardClassByCode, extractWasteNameFromClassifierEntry, classifierEntriesForCode } from './code112.js';
 
@@ -1039,6 +1039,12 @@ export async function generate(project, userSources = {}) {
 
   if (answer) addUserMessage(project, answer, now);
   state.updatedAt = now;
+
+  if (answer && isForceReferenceCommand(answer)) {
+    const { saved, skipped } = await syncWasteFromState(state, docsPath, state.referencePath);
+    addAgentMessage(project, `Данные по ${saved} отходам внесены в Справочник. Пропущено (недостаточно данных): ${skipped}.`, now);
+    return project;
+  }
 
   // pending flows
   if (state.pendingOrgChoice) return finish(project, () => handleOrgChoice(project, state, answer, now));

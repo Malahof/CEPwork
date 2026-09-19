@@ -7,7 +7,7 @@ import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../me
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { refreshDisposalReferences, resolveDisposalMethod } from '../disposalResolver.js';
-import { addWasteToReference, findWasteInReference, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteReferencePage, upsertWasteReference } from '../wasteReference.js';
+import { addWasteToReference, findWasteInReference, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference, upsertWasteReference } from '../wasteReference.js';
 import {
   WASTE_EXTRACTION_MODES,
   extractWasteDataFromText,
@@ -95,6 +95,13 @@ export async function generate(projectData, userSources = {}) {
   if (userSources.referencePath) state.referencePath = userSources.referencePath;
 
   mergeCollectedData(projectData, state, userSources);
+
+  if (answer && isForceReferenceCommand(answer)) {
+    const { saved, skipped } = await syncWasteFromState(state, docsPath, state.referencePath);
+    addAgentMessage(projectData, `Данные по ${saved} отходам внесены в Справочник. Пропущено (недостаточно данных): ${skipped}.`, now);
+    projectData.updatedAt = now;
+    return projectData;
+  }
 
   if (!state.startedAt) {
     state.startedAt = now;
@@ -502,7 +509,7 @@ export async function generate(projectData, userSources = {}) {
     const memoryQuestion = prepareOrganizationMemoryConfirmation(state, memory, answer);
     if (memoryQuestion) {
       askUser(projectData, memoryQuestion, confirmationOptions(), now);
-    } else if (await promptNewWasteForReference(projectData, state, docsPath, now)) {
+    } else if (await syncWasteDetailsToReference(projectData, state, docsPath, now)) {
       return projectData;
     } else {
       askUser(projectData, 'К чему теперь приступить?', menuOptions(), now);
@@ -3207,11 +3214,11 @@ async function finishActiveDocument(project, state, answer, outputDir, docsPath,
       refreshAppendixContent: document.key === 'appendix',
     });
     const nextQuestion = document.key === 'appendix' ? buildNextWasteDetailsQuestion(state) : '';
-    if (document.key === 'appendix' && (await promptNewWasteForReference(project, state, docsPath, now, 'appendix'))) {
+    if (document.key === 'appendix' && (await syncWasteDetailsToReference(project, state, docsPath, now))) {
       project.updatedAt = now;
       return project;
     }
-    if (!nextQuestion && (await promptNewWasteForReference(project, state, docsPath, now))) {
+    if (!nextQuestion && (await syncWasteDetailsToReference(project, state, docsPath, now))) {
       project.updatedAt = now;
       return project;
     }
@@ -5205,23 +5212,29 @@ export async function regenerateArchivedCode112Documents(sourceProjectId, docKey
   return { results, projectDir };
 }
 
-async function promptNewWasteForReference(project, state, docsPath, now, resume = null) {
-  if (state.pendingWasteReference) return false;
+async function syncWasteDetailsToReference(project, state, docsPath, now) {
   const reference = await loadWasteReference(state.referencePath);
-  const declined = new Set([...(state.referenceDeclined ?? []), ...(state.ignoredWasteCodes ?? [])]);
-  const candidate = (Array.isArray(state.wastes) ? state.wastes : []).find(
-    (waste) => waste?.code && (waste.source?.trim() || waste.composition?.trim() || waste.sourceName?.trim()) && !isWasteInReference(reference, waste.code) && !declined.has(waste.code)
-  );
-  if (!candidate) return false;
-  state.pendingWasteReference = { code: candidate.code, resume };
-  console.log('[code112] Отход отсутствует в справочнике:', candidate.code);
-  askUser(
-    project,
-    `Отход ${candidate.code} «${candidate.name ?? candidate.wasteName ?? 'без наименования'}» отсутствует в справочнике. Хотите добавить его в справочник с текущими значениями источника, состава и плотности (если указана)?`,
-    confirmationOptions(),
-    now
-  );
-  return true;
+  let saved = 0;
+  for (const waste of Array.isArray(state.wastes) ? state.wastes : []) {
+    if (!waste?.code) continue;
+    const entry = {
+      code: waste.code,
+      name: waste.name ?? waste.wasteName ?? '',
+      source: waste.sourceName ?? waste.source ?? '',
+      composition: waste.composition ?? '',
+      density: waste.density ?? '',
+    };
+    if (entry.source || entry.composition || entry.density) {
+      await upsertWasteInReference(entry, state.referencePath);
+      saved += 1;
+    }
+  }
+  if (saved) {
+    await syncWasteReferencePage(docsPath, state.referencePath);
+    addAgentMessage(project, `Данные по ${saved} отходам автоматически сохранены в Справочник.`, now);
+    console.log('[code112] Автосохранение в справочник:', saved);
+  }
+  return false;
 }
 
 async function handleWasteReferenceAnswer(project, state, answer, docsPath, now) {
@@ -5263,7 +5276,7 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
     askUser(project, buildWasteEditQuestion(state), [], now);
   } else if (state.pendingWasteImport) {
     askUser(project, buildWasteReviewQuestion(state), confirmationOptions(), now);
-  } else if (await promptNewWasteForReference(project, state, docsPath, now)) {
+  } else if (await syncWasteDetailsToReference(project, state, docsPath, now)) {
     return project;
   } else {
     askUser(project, 'К чему теперь приступить?', menuOptions(), now);
