@@ -80,6 +80,10 @@ test('code111 collects data step by step and generates instruction + statement',
     now: 41,
   });
 
+  // source for each waste (from reference)
+  await generate(project, { ...ctx, answer: 'Административная деятельность', now: 410 });
+  await generate(project, { ...ctx, answer: 'Производство табачных изделий', now: 411 });
+
   // waste details
   await generate(project, {
     ...ctx,
@@ -90,6 +94,11 @@ test('code111 collects data step by step and generates instruction + statement',
   // pod10 + report
   await generate(project, { ...ctx, answer: 'да', now: 43 });
   await generate(project, { ...ctx, answer: 'да', now: 44 });
+
+  // density for stored wastes
+  await generate(project, { ...ctx, answer: '0,5', now: 440 });
+  await generate(project, { ...ctx, answer: '0,3', now: 441 });
+
   assert.equal(s().step, 'ready');
 
   // menu options include generate

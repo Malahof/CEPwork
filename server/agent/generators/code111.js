@@ -457,7 +457,148 @@ async function handleWastes(project, state, answer, now, context) {
     return;
   }
 
+  await ensureWasteSource(project, state, now, context);
+}
+
+async function ensureWasteSource(project, state, now, ctx) {
+  const reference = await loadWasteReference(state.referencePath);
+  const missing = [];
+  for (const waste of state.wastes) {
+    const ref = getWasteFromReference(reference, waste.code);
+    if (ref?.source?.trim()) {
+      if (!waste.source?.trim()) {
+        waste.source = ref.source;
+        console.log('[code111] Отход', waste.code, 'источник взят из справочника');
+      }
+    } else if (waste.source?.trim()) {
+      await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source }, state.referencePath);
+    } else {
+      missing.push(waste);
+    }
+  }
+
+  if (missing.length) {
+    console.log('[code111] Отходы без источника:', missing.map((w) => w.code).join(', '));
+    state.awaitingWasteSource = { queue: missing.map((w) => w.code), index: 0 };
+    state.step = 'wasteSource';
+    syncCode111ProjectPages(project, state, ctx.docsPath ?? DEFAULT_DOCS_PATH, now, { activateSection: 'section5' }).catch((e) => console.error('[code111] sync section5 failed', e));
+    askWasteSource(project, state, now);
+    return true;
+  }
+
   askWasteDetails(project, state, now);
+  return false;
+}
+
+function askWasteSource(project, state, now) {
+  const q = state.awaitingWasteSource;
+  const code = q.queue[q.index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) {
+    q.index++;
+    if (q.index >= q.queue.length) {
+      state.awaitingWasteSource = null;
+      askWasteDetails(project, state, now);
+    } else {
+      askWasteSource(project, state, now);
+    }
+    return;
+  }
+  askUser(project, `Для отхода ${waste.code} — ${waste.name || '—'} укажите источник образования.`, [], now);
+}
+
+async function handleWasteSourceInput(project, state, answer, now, ctx) {
+  const q = state.awaitingWasteSource;
+  if (!q) return;
+  const code = q.queue[q.index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (waste) {
+    waste.source = answer.trim();
+    console.log('[code111] Отход', waste.code, 'источник сохранён');
+    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source }, state.referencePath);
+    try {
+      await syncWasteReferencePage(ctx.docsPath ?? DEFAULT_DOCS_PATH, state.referencePath);
+    } catch (e) {
+      console.warn('[code111] syncWasteReferencePage failed', e.message);
+    }
+  }
+  q.index++;
+  if (q.index >= q.queue.length) {
+    state.awaitingWasteSource = null;
+    syncCode111ProjectPages(project, state, ctx.docsPath ?? DEFAULT_DOCS_PATH, now, { activateSection: 'section5' }).catch((e) => console.error('[code111] sync section5 failed', e));
+    askWasteDetails(project, state, now);
+  } else {
+    askWasteSource(project, state, now);
+  }
+}
+
+async function ensureWasteDensity(project, state, now, ctx) {
+  const reference = await loadWasteReference(state.referencePath);
+  const missing = [];
+  for (const waste of state.wastes) {
+    if (/не хранится|по количеству выполненных работ/i.test(waste.storage ?? '')) continue;
+    const ref = getWasteFromReference(reference, waste.code);
+    if (ref?.density?.trim()) {
+      if (!waste.density?.trim()) {
+        waste.density = ref.density;
+        console.log('[code111] Отход', waste.code, 'плотность взята из справочника =', waste.density);
+      }
+    } else if (waste.density?.trim()) {
+      await upsertWasteInReference({ code: waste.code, name: waste.name, density: waste.density }, state.referencePath);
+    } else {
+      missing.push(waste);
+    }
+  }
+
+  if (missing.length) {
+    console.log('[code111] Отходы без плотности:', missing.map((w) => w.code).join(', '));
+    state.awaitingWasteDensity = { queue: missing.map((w) => w.code), index: 0 };
+    askWasteDensity(project, state, now);
+    return true;
+  }
+
+  return false;
+}
+
+function askWasteDensity(project, state, now) {
+  const q = state.awaitingWasteDensity;
+  const code = q.queue[q.index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (!waste) {
+    q.index++;
+    if (q.index >= q.queue.length) {
+      state.awaitingWasteDensity = null;
+      askMenu(project, state, now, 'Основные данные собраны. Приложения А и Г будут сформированы автоматически; схемы для приложений Б и В вставляются вручную в сгенерированный документ.');
+    } else {
+      askWasteDensity(project, state, now);
+    }
+    return;
+  }
+  askUser(project, `Для отхода ${waste.code} — ${waste.name || '—'} укажите плотность (т/м³). Пример: 0,4.`, [], now);
+}
+
+async function handleWasteDensityInput(project, state, answer, now, ctx) {
+  const q = state.awaitingWasteDensity;
+  if (!q) return;
+  const code = q.queue[q.index];
+  const waste = state.wastes.find((w) => w.code === code);
+  if (waste) {
+    waste.density = answer.trim();
+    console.log('[code111] Отход', waste.code, 'плотность сохранена в справочник =', waste.density);
+    await upsertWasteInReference({ code: waste.code, name: waste.name, density: waste.density }, state.referencePath);
+    try {
+      await syncWasteReferencePage(ctx.docsPath ?? DEFAULT_DOCS_PATH, state.referencePath);
+    } catch (e) {
+      console.warn('[code111] syncWasteReferencePage failed', e.message);
+    }
+  }
+  q.index++;
+  if (q.index >= q.queue.length) {
+    state.awaitingWasteDensity = null;
+    askMenu(project, state, now, 'Основные данные собраны. Приложения А и Г будут сформированы автоматически; схемы для приложений Б и В вставляются вручную в сгенерированный документ.');
+  } else {
+    askWasteDensity(project, state, now);
+  }
 }
 
 function defaultDefinition(waste) {
@@ -545,11 +686,14 @@ function handlePod10(project, state, answer, now) {
   askUser(project, 'Оставить в разделе 4 блок отчётности «1-отходы»?', [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }], now);
 }
 
-function handleReport(project, state, answer, now) {
+async function handleReport(project, state, answer, now, ctx) {
   state.pendingReport = false;
   state.reportBlock = isYesAnswer(answer) || normalizeAnswer(answer) === 'yes';
   state.step = 'ready';
-  askMenu(project, state, now, 'Основные данные собраны. Приложения А и Г будут сформированы автоматически; схемы для приложений Б и В вставляются вручную в сгенерированный документ.');
+  const started = await ensureWasteDensity(project, state, now, ctx);
+  if (!started) {
+    askMenu(project, state, now, 'Основные данные собраны. Приложения А и Г будут сформированы автоматически; схемы для приложений Б и В вставляются вручную в сгенерированный документ.');
+  }
 }
 
 // ---------- generation ----------
@@ -759,6 +903,7 @@ function sectionForStep(step) {
 }
 
 function askMenu(project, state, now, prefix = '') {
+  state.step = 'ready';
   const sectionKey = sectionForStep(state.step);
   const section = code111Sections.find((s) => s.key === sectionKey) ?? code111Sections[0];
   const question = `${prefix ? prefix + '\n' : ''}Работаем над «${section.label}». К чему приступить?`;
@@ -786,6 +931,8 @@ export function getCode111Options(project) {
   if (state.pendingAddresses) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
   if (state.pendingConditional) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
   if (state.pendingPositions) return [{ key: 'confirm', label: 'Подходит' }, { key: 'edit', label: 'Изменить' }];
+  if (state.awaitingWasteSource) return [];
+  if (state.awaitingWasteDensity) return [];
   if (state.pendingReference) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
   if (state.pendingPod10) return [{ key: 'yes', label: '15 число' }, { key: 'other', label: 'Другая дата' }];
   if (state.pendingReport) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
@@ -979,14 +1126,20 @@ export async function registerCode111Upload(project, upload, options = {}) {
       const reference = await loadWasteReference(state.referencePath);
       for (const row of rows) {
         const ref = findWasteInReference(reference, row.code);
+        const source = ref?.source?.trim() ? ref.source : (row.source || '');
+        if (ref?.source?.trim() && row.source?.trim() && row.source !== ref.source) {
+          console.log('[code111] Отход', row.code, 'источник из файла проигнорирован (в справочнике уже есть)');
+        }
+        const density = ref?.density?.trim() ? ref.density : (row.density || '');
         state.wastes.push({
           ...row,
-          source: row.source || ref?.source || '',
+          source,
           composition: ref?.composition || '',
-          density: row.density || ref?.density || '',
+          density,
           definition: '',
           unit: 'т',
         });
+        await upsertWasteInReference({ code: row.code, name: row.name, source, density }, state.referencePath);
       }
       addAgentMessage(project, `Из файла «${upload.fileName}» добавлено отходов: ${rows.length}.`, options.now ?? Date.now());
       return;
@@ -1053,9 +1206,11 @@ export async function generate(project, userSources = {}) {
   if (state.pendingManager) return finish(project, () => handleManager(project, state, answer, now));
   if (state.pendingConditional) return finish(project, () => handleConditional(project, state, answer, now));
   if (state.pendingPositions) return finish(project, () => handlePositions(project, state, answer, now));
+  if (state.awaitingWasteSource) return finish(project, async () => handleWasteSourceInput(project, state, answer, now, context));
+  if (state.awaitingWasteDensity) return finish(project, async () => handleWasteDensityInput(project, state, answer, now, context));
   if (state.pendingReference) return finish(project, async () => handlePendingReference(project, state, answer, now, context));
   if (state.pendingPod10) return finish(project, () => handlePod10(project, state, answer, now));
-  if (state.pendingReport) return finish(project, () => handleReport(project, state, answer, now));
+  if (state.pendingReport) return finish(project, () => handleReport(project, state, answer, now, context));
   if (state.pendingGenerationChoice || state.pendingFinalGeneration) {
     const a = normalizeAnswer(answer);
     const mode = a === 'archive' || /архив|zip/i.test(a) ? 'archive' : a === 'cancel' || /отмена|нет/.test(a) ? 'cancel' : 'separate';
