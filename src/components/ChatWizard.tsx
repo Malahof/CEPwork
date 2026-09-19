@@ -25,10 +25,20 @@ const OPTION_LABELS: Record<string, string> = {
   handling: 'Способы обращения',
   bizinspect: 'bizinspect.by',
   kartoteka: 'kartoteka.by',
+  statement: 'Заявление',
+  startStatement: 'Создать заявление',
+  all: 'Извлечь все данные',
+  other: 'Другая дата',
+  sorting: 'Сортировка',
+  reuse: 'Использование',
+  burial: 'Захоронение',
+  continue: 'Продолжить',
+  finish: 'Завершить',
+  add: 'Добавить',
 };
 
 function getOptionLabel(option: { key: string; label: string }) {
-  return OPTION_LABELS[option.key] ?? option.label;
+  return OPTION_LABELS[option.key] ?? option.label ?? option.key;
 }
 
 import { useEffect, useMemo, useRef, useState } from 'react';

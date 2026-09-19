@@ -7,7 +7,7 @@ import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../me
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { refreshDisposalReferences, resolveDisposalMethod } from '../disposalResolver.js';
-import { addWasteToReference, findWasteInReference, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference, upsertWasteReference } from '../wasteReference.js';
+import { addWasteToReference, findWasteInReference, getMissingFields, getWasteFromReference, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference, upsertWasteReference } from '../wasteReference.js';
 import {
   WASTE_EXTRACTION_MODES,
   extractWasteDataFromText,
