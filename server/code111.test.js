@@ -60,10 +60,11 @@ test('code111 collects data step by step and generates instruction + statement',
 
   // addresses
   await generate(project, { ...ctx, answer: 'г. Минск, ул. Тестовая, 1\nг. Борисов, ул. Заводская, 5', now: 22 });
+  await generate(project, { ...ctx, answer: 'да', now: 23 });
   assert.equal(s().addresses.length, 2);
 
-  // conditionals: 4 yes/no questions
-  for (let i = 0; i < 4; i++) {
+  // conditionals: аренда + цех, then license/expertise skipped when no цех
+  for (let i = 0; i < 2; i++) {
     await generate(project, { ...ctx, answer: i === 0 ? 'да' : 'нет', now: 30 + i });
   }
   assert.equal(s().conditionalBlocks['аренда'], true);

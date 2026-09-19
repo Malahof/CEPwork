@@ -2871,6 +2871,7 @@ function ensureGeneratorState(project, now) {
       pendingGenerationChoice: null,
       pendingWasteReference: null,
       referenceDeclined: [],
+      ignoredWasteCodes: [],
       titleData: null,
       awaitingWasteDetails: null,
       awaitingQuantities: null,
@@ -2929,6 +2930,9 @@ function ensureGeneratorState(project, now) {
     project.extractedData.code112.pendingWasteReference = project.extractedData.code112.pendingWasteReference ?? null;
     project.extractedData.code112.referenceDeclined = Array.isArray(project.extractedData.code112.referenceDeclined)
       ? project.extractedData.code112.referenceDeclined
+      : [];
+    project.extractedData.code112.ignoredWasteCodes = Array.isArray(project.extractedData.code112.ignoredWasteCodes)
+      ? project.extractedData.code112.ignoredWasteCodes
       : [];
     project.extractedData.code112.titleData = project.extractedData.code112.titleData ?? null;
     project.extractedData.code112.startedAt = project.extractedData.code112.startedAt ?? null;
@@ -5204,9 +5208,9 @@ export async function regenerateArchivedCode112Documents(sourceProjectId, docKey
 async function promptNewWasteForReference(project, state, docsPath, now, resume = null) {
   if (state.pendingWasteReference) return false;
   const reference = await loadWasteReference(state.referencePath);
-  const declined = new Set(state.referenceDeclined ?? []);
+  const declined = new Set([...(state.referenceDeclined ?? []), ...(state.ignoredWasteCodes ?? [])]);
   const candidate = (Array.isArray(state.wastes) ? state.wastes : []).find(
-    (waste) => waste?.code && !isWasteInReference(reference, waste.code) && !declined.has(waste.code)
+    (waste) => waste?.code && (waste.source?.trim() || waste.composition?.trim() || waste.sourceName?.trim()) && !isWasteInReference(reference, waste.code) && !declined.has(waste.code)
   );
   if (!candidate) return false;
   state.pendingWasteReference = { code: candidate.code, resume };
@@ -5236,10 +5240,13 @@ async function handleWasteReferenceAnswer(project, state, answer, docsPath, now)
     };
     await addWasteToReference(entry, state.referencePath);
     await syncWasteReferencePage(docsPath, state.referencePath);
+    console.log(`[code112] Отход ${entry.code} добавлен в справочник`);
     addAgentMessage(project, `Отход ${entry.code} добавлен в справочник отходов.`, now);
   } else {
     if (!isYesAnswer(normalized) && pending?.code) {
       state.referenceDeclined = markWasteAsIgnored(state.referenceDeclined, pending.code);
+      state.ignoredWasteCodes = markWasteAsIgnored(state.ignoredWasteCodes, pending.code);
+      console.log(`[code112] Отход ${pending.code} проигнорирован для проекта ${project.id}`);
     }
     addAgentMessage(project, 'Отход не добавлен в справочник.', now);
   }

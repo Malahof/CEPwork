@@ -22,17 +22,17 @@ export const code111Sections = [
   { key: 'section1', label: 'Раздел 1. Общие сведения', variables: [
     'название_организации_полное', 'название_организации', 'юридический_адрес', 'адрес', 'УНП', 'дата_регистрации', 'орган_регистрации', 'вид_деятельности', 'Место'
   ]},
-  { key: 'section2', label: 'Раздел 2. Ответственные лица', variables: ['positions'] },
-  { key: 'section3', label: 'Раздел 3. Общие положения', variables: [] },
-  { key: 'section4', label: 'Раздел 4. Требования к сбору, накоплению и хранению отходов', variables: ['wastes'] },
-  { key: 'section5', label: 'Раздел 5. Требования к размещению и обезвреживанию отходов', variables: ['wastes'] },
-  { key: 'section6', label: 'Раздел 6. Требования к транспортированию отходов', variables: ['wastes'] },
-  { key: 'section7', label: 'Раздел 7. Требования к учёту и контролю образования отходов', variables: [] },
-  { key: 'section8', label: 'Раздел 8. Порядок действий при чрезвычайных ситуациях', variables: [] },
-  { key: 'appendixA', label: 'Приложение А. Список должностей', variables: ['positions'] },
-  { key: 'appendixB', label: 'Приложение Б. Список отходов', variables: ['wastes'] },
-  { key: 'appendixC', label: 'Приложение В. Дополнительные документы', variables: ['statement.extraDocs'] },
-  { key: 'appendixD', label: 'Приложение Г. Лицензии/экспертиза', variables: ['conditionalBlocks'] },
+  { key: 'section2', label: 'Раздел 2. Ответственные за организацию обращения с отходами производства', variables: ['positions'] },
+  { key: 'section3', label: 'Раздел 3. Образование отходов производства', variables: [] },
+  { key: 'section4', label: 'Раздел 4. Учет отходов производства', variables: ['wastes'] },
+  { key: 'section5', label: 'Раздел 5. Сбор и хранение отходов производства', variables: ['wastes'] },
+  { key: 'section6', label: 'Раздел 6. Заготовка, использование и обезвреживание отходов производства', variables: ['wastes'] },
+  { key: 'section7', label: 'Раздел 7. Захоронение отходов производства', variables: [] },
+  { key: 'section8', label: 'Раздел 8. Перевозка отходов производства', variables: [] },
+  { key: 'appendixA', label: 'ПРИЛОЖЕНИЕ А — Образующиеся отходы производства', variables: ['wastes'] },
+  { key: 'appendixB', label: 'ПРИЛОЖЕНИЕ Б — Карта-схема источников образования отходов производства', variables: ['positions'] },
+  { key: 'appendixC', label: 'ПРИЛОЖЕНИЕ В — Карта-схема хранения отходов производства', variables: [] },
+  { key: 'appendixD', label: 'ПРИЛОЖЕНИЕ Г — Расчет-обоснование количества отходов производства для временного хранения', variables: ['conditionalBlocks'] },
 ];
 
 const DEFAULT_POSITIONS = ['Директор (заместитель директора)', 'Главный бухгалтер', 'Инженер по охране окружающей среды', 'Руководители структурных подразделений'];
@@ -48,9 +48,9 @@ const ORG_MANUAL_FIELDS = [
 
 const CONDITIONAL_BLOCKS = [
   { key: 'аренда', question: 'В организации арендуются помещения (отход 9120400 принадлежит арендодателю)?', pattern: /арендодател/i },
-  { key: 'цех', question: 'В организации введён в эксплуатацию цех/объект по использованию отходов?', pattern: /цех по переработки|цех по переработке|введен в эксплуатацию цех/i },
-  { key: 'лицензия', question: 'Организации выдана лицензия на деятельность, связанную с воздействием на окружающую среду?', pattern: /лицензи/i },
-  { key: 'экспертиза', question: 'Получено заключение государственной экологической экспертизы?', pattern: /экологической экспертизы/i },
+  { key: 'цех', question: 'Раздел 1. В организации введён в эксплуатацию цех/объект по использованию/заготовке/захоронению отходов?', pattern: /цех по переработки|цех по переработке|введен в эксплуатацию цех/i },
+  { key: 'лицензия', question: 'Раздел 1. Организации выдана лицензия на деятельность, связанную с воздействием на окружающую среду?', pattern: /лицензи/i, skipIf: 'цех' },
+  { key: 'экспертиза', question: 'Раздел 1. Получено заключение государственной экологической экспертизы?', pattern: /экологической экспертизы/i, skipIf: 'цех' },
 ];
 
 function normalizeAnswer(value) {
@@ -199,6 +199,7 @@ function handleOrgChoice(project, state, answer, now) {
   }
   const source = a === 'bizinspect' ? state.orgSources?.bizinspect : state.orgSources?.kartoteka;
   Object.assign(state.data, buildOrganizationData(source ?? state.orgSources?.kartoteka ?? state.orgSources?.bizinspect));
+  console.log('[code111] Применение данных организации:', { unp: state.data.УНП, full: state.data.название_организации_полное, short: state.data.название_организации, address: state.data.юридический_адрес, date: state.data.дата_регистрации, body: state.data.орган_регистрации, activity: state.data.вид_деятельности, locality: state.data.Место });
   askOrgConfirm(project, state, now);
 }
 
@@ -234,6 +235,7 @@ function extractLocalityText(address) {
 function askManagerPosition(project, state, now) {
   state.step = 'managerPosition';
   state.pendingManager = 'position';
+  syncCode111ProjectPages(project, state, DEFAULT_DOCS_PATH, now, { activateSection: 'section1' }).catch((e) => console.error('[code111] sync section1 failed', e));
   askUser(project, 'Укажите должность руководителя организации (например, «Директор»).', [], now);
 }
 
@@ -250,20 +252,52 @@ function handleManager(project, state, answer, now) {
   askUser(project, 'Укажите адреса мест осуществления деятельности, связанной с обращением с отходами (каждый адрес с новой строки или через «;»). Если адрес один — укажите юридический адрес или «совпадает».', [], now);
 }
 
+function askAddressConfirm(project, state, now) {
+  const list = (state.addresses || []).map((ad, i) => `${i + 1}. ${ad}`).join('\n');
+  state.pendingAddresses = 'confirm';
+  askUser(project, `Проверьте адреса осуществления деятельности:\n${list}\n\nАдрес один / список полный? (Да — перейти дальше, Нет — добавить ещё)`, [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }], now);
+}
+
 function handleAddresses(project, state, answer, now) {
   const a = normalizeAnswer(answer);
+  if (state.pendingAddresses === 'more') {
+    if (/готово|конец/i.test(a) || isNoAnswer(a) || a === 'no') {
+      state.pendingAddresses = null;
+      state.step = 'conditionals';
+      state.conditionalIndex = 0;
+      askNextConditional(project, state, now);
+      return;
+    }
+    const more = answer.split(/[\n;]/).map((s) => s.trim()).filter(Boolean);
+    if (more.length) state.addresses = [...(state.addresses || []), ...more];
+    askAddressConfirm(project, state, now);
+    return;
+  }
+  if (state.pendingAddresses === 'confirm') {
+    if (isYesAnswer(a) || /готово/i.test(a) || a === 'yes') {
+      state.pendingAddresses = null;
+      state.step = 'conditionals';
+      state.conditionalIndex = 0;
+      askNextConditional(project, state, now);
+      return;
+    }
+    state.pendingAddresses = 'more';
+    askUser(project, 'Введите следующий адрес (или «Готово», если список полный).', [], now);
+    return;
+  }
   if (/совпадает|тот же|юридическ/i.test(a)) {
-    state.addresses = [state.data.юридический_адрес || answer];
+    state.addresses = [state.data.юридический_адрес || a];
   } else {
     state.addresses = answer.split(/[\n;]/).map((s) => s.trim()).filter(Boolean);
   }
   if (!state.addresses.length) state.addresses = [state.data.юридический_адрес || ''];
-  state.step = 'conditionals';
-  state.conditionalIndex = 0;
-  askNextConditional(project, state, now);
+  askAddressConfirm(project, state, now);
 }
 
 function askNextConditional(project, state, now) {
+  while (CONDITIONAL_BLOCKS[state.conditionalIndex]?.skipIf && !state.conditionalBlocks[CONDITIONAL_BLOCKS[state.conditionalIndex].skipIf]) {
+    state.conditionalIndex += 1;
+  }
   const block = CONDITIONAL_BLOCKS[state.conditionalIndex];
   if (!block) {
     state.step = 'positions';
@@ -310,9 +344,14 @@ function handlePositions(project, state, answer, now) {
     return;
   }
   const list = answer.split(/[\n;]/).map((s) => s.trim()).filter(Boolean);
-  if (list.length) state.positions = list;
+  if (list.length) {
+    state.positions = list;
+    state.data.ответственные_лица = list;
+    console.log('[code111] Раздел 2: список ответственных обновлён:', list.length, 'должностей');
+  }
   state.pendingPositions = null;
   state.step = 'wastes';
+  syncCode111ProjectPages(project, state, DEFAULT_DOCS_PATH, now, { activateSection: 'section2' }).catch((e) => console.error('[code111] sync section2 failed', e));
   askWasteList(project, state, now);
 }
 
@@ -716,6 +755,7 @@ export function getCode111Options(project) {
   ];
   if (state.pendingOrgChoice) return [{ key: 'bizinspect', label: 'bizinspect.by' }, { key: 'kartoteka', label: 'kartoteka.by' }, { key: 'manual', label: 'Ввести вручную' }];
   if (state.pendingOrgConfirm) return [{ key: 'confirm', label: 'Подтвердить' }, { key: 'manual', label: 'Исправить вручную' }];
+  if (state.pendingAddresses) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
   if (state.pendingConditional) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
   if (state.pendingPositions) return [{ key: 'confirm', label: 'Подходит' }, { key: 'edit', label: 'Изменить' }];
   if (state.pendingReference) return [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }];
@@ -797,7 +837,7 @@ function getVariableDisplay(state, variable) {
   if (variable === 'positions') {
     const positions = Array.isArray(state.positions) ? state.positions : [];
     if (!positions.length) return '_нет данных_';
-    return positions.map((p) => `- ${p}`).join('\n');
+    return positions.map((p) => `- [должность]: ${p}`).join('\n');
   }
   if (variable === 'wastes') {
     const wastes = Array.isArray(state.wastes) ? state.wastes : [];
@@ -817,6 +857,22 @@ function getVariableDisplay(state, variable) {
   return state.data?.[variable] || '_нет данных_';
 }
 
+const FIELD_LABELS = {
+  'название_организации_полное': 'Полное наименование',
+  'название_организации': 'Сокращённое наименование',
+  'юридический_адрес': 'Юридический адрес',
+  'адрес': 'Адрес осуществления деятельности',
+  'УНП': 'УНП',
+  'дата_регистрации': 'Дата регистрации',
+  'орган_регистрации': 'Орган регистрации',
+  'вид_деятельности': 'Вид деятельности',
+  'Место': 'Место осуществления деятельности',
+  'positions': 'Ответственные лица (должности)',
+  'wastes': 'Отходы',
+  'statement.extraDocs': 'Дополнительные документы',
+  'conditionalBlocks': 'Лицензии / экспертиза',
+};
+
 function buildSectionContent(section, state) {
   const lines = [`# ${section.label}`];
   if (!section.variables.length) {
@@ -824,7 +880,7 @@ function buildSectionContent(section, state) {
   } else {
     for (const variable of section.variables) {
       const display = getVariableDisplay(state, variable);
-      const label = variable === 'positions' ? 'Ответственные лица (должности)' : variable === 'wastes' ? 'Отходы' : variable === 'statement.extraDocs' ? 'Дополнительные документы' : variable;
+      const label = FIELD_LABELS[variable] ?? variable;
       lines.push(`**${label}**`);
       lines.push(display);
       lines.push('');
