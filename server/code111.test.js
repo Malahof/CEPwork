@@ -76,27 +76,20 @@ test('code111 collects data step by step and generates instruction + statement',
   // wastes
   await generate(project, {
     ...ctx,
-    answer: '9120400;Отходы производства, подобные отходам жизнедеятельности;неопасные;твердое\n1140202;Жилки табачного листа;4;твердое',
+    answer: '9120400\n1140202',
     now: 41,
   });
-  // first waste not in reference -> prompt add
-  assert.equal(s().pendingReference?.code, '9120400');
-  await generate(project, { ...ctx, answer: 'да', now: 42 });
-  await generate(project, { ...ctx, answer: 'Бытовая деятельность;смешанный;0,2', now: 43 });
-  // second waste not in reference
-  assert.equal(s().pendingReference?.code, '1140202');
-  await generate(project, { ...ctx, answer: 'нет', now: 44 });
 
   // waste details
   await generate(project, {
     ...ctx,
     answer: '9120400;г. Минск, ул. Тестовая, 1;контейнер;0,8 м3\n1140202;г. Борисов, ул. Заводская, 5;площадка;10х10х1 м',
-    now: 45,
+    now: 42,
   });
 
   // pod10 + report
-  await generate(project, { ...ctx, answer: 'да', now: 46 });
-  await generate(project, { ...ctx, answer: 'да', now: 47 });
+  await generate(project, { ...ctx, answer: 'да', now: 43 });
+  await generate(project, { ...ctx, answer: 'да', now: 44 });
   assert.equal(s().step, 'ready');
 
   // menu options include generate

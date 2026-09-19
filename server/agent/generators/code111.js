@@ -6,7 +6,7 @@ import { parseDateToFormat, replaceXmlPlaceholders } from '../../utils/docxHelpe
 import { resolveDisposalMethod } from '../disposalResolver.js';
 import { addWasteToReference, findWasteInReference, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteReferencePage } from '../wasteReference.js';
 import { buildOrganizationData, fetchOrganizationByUnp } from '../organizationParser.js';
-import { readDocsSnapshot, writeDocsSnapshot } from './code112.js';
+import { readDocsSnapshot, writeDocsSnapshot, readWasteClassifierText, findHazardClassByCode, extractWasteNameFromClassifierEntry, classifierEntriesForCode } from './code112.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const DEFAULT_OUTPUT_DIR = path.join(PROJECT_ROOT, 'data', 'agent-docs');
@@ -358,58 +358,88 @@ function handlePositions(project, state, answer, now) {
 function askWasteList(project, state, now) {
   askUser(
     project,
-    'Раздел 5 — отходы. Введите перечень отходов — по одному на строку в формате «код;наименование;класс;физ. состояние». Можно также загрузить файл.',
+    'Введите коды отходов (по одному на строке или через ";"). Наименование, класс опасности и физическое состояние будут получены автоматически.',
     [],
     now
   );
 }
 
-function parseWasteInput(text) {
-  const rows = [];
-  for (const line of String(text ?? '').split(/\r?\n/)) {
-    const parts = line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/[;|]/).map((p) => p.trim());
-    if (parts.length < 2 || !/^\d{3,}/.test(parts[0])) continue;
-    rows.push({
-      code: parts[0],
-      name: parts[1] ?? '',
-      hazardClass: parts[2] ?? '',
-      physicalState: parts[3] ?? '',
-      source: parts[4] ?? '',
-      site: parts[5] ?? '',
-      storage: parts[6] ?? '',
-      size: parts[7] ?? '',
-      handling: parts[8] ?? '',
-      normative: parts[9] ?? '',
-      density: parts[10] ?? '',
-    });
+function applyPhysicalStateCommands(answer, state) {
+  const text = answer.toLowerCase();
+  if (/^все\s*(?:тв|твердые)$/i.test(answer)) {
+    state.wastes.forEach((w) => { w.physicalState = 'твердые'; });
+    return true;
   }
-  return rows;
+  if (/^все\s*(?:жд|жидкие)$/i.test(answer)) {
+    state.wastes.forEach((w) => { w.physicalState = 'жидкие'; });
+    return true;
+  }
+  const solidMatch = answer.match(/^([\d,;\s]+)\s+(?:тв|твердые)$/i);
+  if (solidMatch) {
+    const codes = solidMatch[1].split(/[\s,;]+/).map((c) => c.trim()).filter(Boolean);
+    state.wastes.forEach((w) => { if (codes.includes(w.code)) w.physicalState = 'твердые'; });
+    return true;
+  }
+  const liquidMatch = answer.match(/^([\d,;\s]+)\s+(?:жд|жидкие)$/i);
+  if (liquidMatch) {
+    const codes = liquidMatch[1].split(/[\s,;]+/).map((c) => c.trim()).filter(Boolean);
+    state.wastes.forEach((w) => { if (codes.includes(w.code)) w.physicalState = 'жидкие'; });
+    return true;
+  }
+  return false;
+}
+
+function extractWasteCodes(answer) {
+  return [...answer.matchAll(/\b\d{7}\b/g)].map((m) => m[0]).filter((v, i, a) => a.indexOf(v) === i);
+}
+
+function askManualWasteName(project, state, now) {
+  const pending = state.pendingWasteManual?.[0];
+  askUser(project, `Отход с кодом ${pending.code} не найден в классификаторе. Введите наименование вручную.`, [], now);
 }
 
 async function handleWastes(project, state, answer, now, context) {
-  const rows = parseWasteInput(answer);
-  if (!rows.length) {
-    askUser(project, 'Не удалось распознать отходы. Введите строки вида «код;наименование;класс;физ. состояние».', [], now);
+  if (applyPhysicalStateCommands(answer, state)) {
+    syncCode111ProjectPages(project, state, DEFAULT_DOCS_PATH, now, { activateSection: 'section5' }).catch((e) => console.error('[code111] sync section5 failed', e));
     return;
   }
-  const reference = await loadWasteReference(state.referencePath);
-  const newWastes = [];
-  const declined = new Set(state.referenceDeclined ?? []);
-  for (const row of rows) {
-    const ref = findWasteInReference(reference, row.code);
-    const waste = {
-      ...row,
-      source: row.source || ref?.source || '',
-      composition: ref?.composition || '',
-      density: row.density || ref?.density || '',
-      definition: '',
-      quantity: '',
-      unit: 'т',
-    };
-    state.wastes.push(waste);
-    if (!ref && !declined.has(row.code)) newWastes.push(waste);
+
+  if (state.pendingWasteManual?.length) {
+    const current = state.pendingWasteManual.shift();
+    current.name = answer.trim();
+    state.wastes.push(current);
+    console.log('[code111] Отход', current.code, 'не найден в классификаторе, введено вручную:', current.name);
+    if (state.pendingWasteManual.length) {
+      askManualWasteName(project, state, now);
+      return;
+    }
   }
-  // Default определение + обращение
+
+  const codes = extractWasteCodes(answer);
+  if (!codes.length) {
+    askUser(project, 'Не удалось распознать коды отходов. Введите семизначные коды по одному на строке или через ";".', [], now);
+    return;
+  }
+
+  const classifierText = context.classifierText ?? await readWasteClassifierText();
+  const manualQueue = [];
+  for (const code of codes) {
+    const existing = state.wastes.find((w) => w.code === code);
+    if (existing) continue;
+    const entries = classifierEntriesForCode(classifierText, code);
+    if (!entries.length) {
+      manualQueue.push({ code, name: '', hazardClass: '', physicalState: 'твердые', definition: '', quantity: '', unit: 'т' });
+      console.log('[code111] Отход', code, 'не найден в классификаторе');
+      continue;
+    }
+    const name = extractWasteNameFromClassifierEntry(entries[0], code);
+    const hazardClass = findHazardClassByCode(classifierText, code);
+    const waste = { code, name, hazardClass, physicalState: 'твердые', definition: '', quantity: '', unit: 'т' };
+    state.wastes.push(waste);
+    console.log('[code111] Отход', code, 'name=', name, 'class=', hazardClass, 'physicalState=', waste.physicalState);
+  }
+  console.log('[code111] Раздел 5: введены коды отходов:', state.wastes.length);
+
   for (const waste of state.wastes) {
     waste.definition = defaultDefinition(waste);
     if (!waste.handling) {
@@ -418,17 +448,15 @@ async function handleWastes(project, state, answer, now, context) {
       waste.handlingSource = resolved ? 'auto' : 'default';
     }
   }
-  if (newWastes.length) {
-    const w = newWastes[0];
-    state.pendingReference = { code: w.code, name: w.name, queue: newWastes.slice(1), fields: {} };
-    askUser(
-      project,
-      `Отход ${w.code} «${w.name || '—'}» отсутствует в справочнике. Хотите добавить его? Будут сохранены источник, состав и плотность.`,
-      [{ key: 'yes', label: 'Да' }, { key: 'no', label: 'Нет' }],
-      now
-    );
+
+  syncCode111ProjectPages(project, state, DEFAULT_DOCS_PATH, now, { activateSection: 'section5' }).catch((e) => console.error('[code111] sync section5 failed', e));
+
+  if (manualQueue.length) {
+    state.pendingWasteManual = manualQueue;
+    askManualWasteName(project, state, now);
     return;
   }
+
   askWasteDetails(project, state, now);
 }
 
@@ -842,7 +870,7 @@ function getVariableDisplay(state, variable) {
   if (variable === 'wastes') {
     const wastes = Array.isArray(state.wastes) ? state.wastes : [];
     if (!wastes.length) return '_нет данных_';
-    return wastes.map((w) => `- ${w.code} — ${w.name || w.wasteName || '—'}`).join('\n');
+    return wastes.map((w) => `- ${w.code} — ${w.name || w.wasteName || '—'} (класс: ${w.hazardClass || '—'}, физ. состояние: ${w.physicalState || 'твердые'})`).join('\n');
   }
   if (variable === 'statement.extraDocs') {
     const docs = Array.isArray(state.statement?.extraDocs) ? state.statement.extraDocs : [];

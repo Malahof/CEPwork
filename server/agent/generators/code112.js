@@ -5590,7 +5590,7 @@ function normalizeExtractedWaste(waste) {
   return normalized;
 }
 
-async function readWasteClassifierText() {
+export async function readWasteClassifierText() {
   try {
     return await readFile(CLASSIFIER_TEXT_PATH, 'utf8');
   } catch (error) {
@@ -5630,7 +5630,7 @@ function isNotFoundError(error) {
   return error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT';
 }
 
-function findHazardClassByCode(classifierText, code) {
+export function findHazardClassByCode(classifierText, code) {
   const entries = classifierEntriesForCode(classifierText, code);
   let starFound = false;
   for (const entry of entries) {
@@ -5645,7 +5645,7 @@ function findHazardClassByCode(classifierText, code) {
   return starFound ? 'не указан' : 'не указан';
 }
 
-function classifierEntriesForCode(classifierText, code) {
+export function classifierEntriesForCode(classifierText, code) {
   const normalizedText = String(classifierText).replace(/\r/g, '\n');
   const matches = [...normalizedText.matchAll(new RegExp(`(?:^|\\n|\\s)${escapeRegExp(code)}\\s+`, 'g'))];
   return matches.map((match) => {
@@ -5668,7 +5668,7 @@ function extractHazardClassFromClassifierEntry(entry) {
   return '';
 }
 
-function extractWasteNameFromClassifierEntry(entry, code) {
+export function extractWasteNameFromClassifierEntry(entry, code) {
   const cleaned = entry.replace(/\r/g, ' ').replace(/\s+/g, ' ').trim();
   const codeRe = new RegExp('^' + escapeRegExp(code) + '\\s*', 'u');
   const withoutCode = cleaned.replace(codeRe, '').trim();
