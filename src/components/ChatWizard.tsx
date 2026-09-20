@@ -245,15 +245,15 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
     }
   }
 
-  async function handleSelect(answer: string) {
+  async function handleSelect(answer: string, answerLabel?: string) {
     if (!project || isSelecting) return;
 
     setIsSelecting(true);
     setError(null);
     try {
-      console.info('[ChatWizard] selectAnswer', { projectId: project.id, answer });
+      console.info('[ChatWizard] selectAnswer', { projectId: project.id, answer, answerLabel });
       if (answer === 'generateAll' || answer === 'createDraft') onGenerationStart?.();
-      updateProjectList(await selectAgentAnswer(project.id, answer));
+      updateProjectList(await selectAgentAnswer(project.id, answer, answerLabel));
       await loadDocs({ silent: true });
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Цэпик не смог обработать ответ');
@@ -416,7 +416,7 @@ export function ChatWizard({ onGenerationStart }: ChatWizardProps) {
                   key={option.key}
                   type="button"
                   disabled={isSelecting || isFileUploading}
-                  onClick={() => void handleSelect(option.key)}
+                  onClick={() => void handleSelect(option.key, getOptionLabel(option))}
                 >
                   {getOptionLabel(option)}
                 </button>

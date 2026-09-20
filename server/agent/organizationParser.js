@@ -123,23 +123,77 @@ function parseBizinspect(html, unp) {
   };
 }
 
+function parseKartotekaText(html, unp) {
+  const text = stripTags(html);
+  const fullName = extractField(text, [
+    /Наименование\s*РусBel\s*([\s\S]*?)\s*История названий/i,
+    /Наименование\s*([\s\S]{3,200}?)\s*История названий/i,
+  ]);
+  const lines = fullName.split(/\s{2,}|\n/).map((s) => s.trim()).filter(Boolean);
+  const candidateFull = lines.find((l) => /(открытое|закрытое|общество|акционерное|ограниченной|учреждение)\s+/.test(l.toLowerCase()) && !/^(ООО|ОАО|ЗАО|УП|РУП|ТДООО|ООО\()/.test(l))
+    || lines.find((l) => /^(ООО|ОАО|ЗАО|УП|РУП|ИП)\s+/.test(l))
+    || lines[0]
+    || '';
+  const candidateShort = lines.find((l) => /^(ООО|ОАО|ЗАО|УП|РУП)\s*[«"]/.test(l)) || candidateFull;
+
+  const legalAddress = extractField(text, [
+    /Адрес регистрации\s*([\s\S]{10,300}?)\s*Основной вид деятельности/i,
+    /Адрес регистрации\s*([^\n]{10,300})/i,
+  ]).replace(/Реквизиты контрагента.*/i, '').trim();
+
+  const registrationDate = extractField(text, [
+    /Регистрация МНС\s*([\d.]{8,10})/i,
+    /Регистрация ЕГР\s*([\d.]{8,10})/i,
+  ]);
+
+  const registrationBody = extractField(text, [
+    /Регистрация ЕГР\s*[\d.\s()]+\s*([^\n]{3,200})/i,
+    /Регистрация МНС\s*[\d.\s()]+\s*([^\n]{3,200})/i,
+  ]).trim();
+
+  const activity = extractField(text, [
+    /Основной вид деятельности\s*([^\n(]{5,300})/i,
+  ]).trim();
+
+  console.log('[organizationParser] kartoteka extracted (text)', {
+    unp,
+    fullName: candidateFull,
+    shortName: candidateShort,
+    legalAddress,
+    registrationDate: normalizeRegDate(registrationDate),
+    registrationBody,
+    activity,
+  });
+
+  if (!candidateFull && !legalAddress) return null;
+  return {
+    unp,
+    fullName: candidateFull,
+    shortName: candidateShort,
+    legalAddress,
+    registrationDate: normalizeRegDate(registrationDate),
+    registrationBody,
+    activity,
+    locality: extractLocality(legalAddress),
+  };
+}
+
 function parseKartoteka(html, unp) {
   if (!html) return null;
   const stateMatch = html.match(/<script id="kartoteka-state" type="application\/json">([\s\S]*?)<\/script>/);
   if (!stateMatch) {
-    logHtml('kartoteka parse input (no state script)', html);
-    return null;
+    return parseKartotekaText(html, unp);
   }
   let data;
   try {
     data = JSON.parse(stateMatch[1]);
   } catch (error) {
     console.warn('[organizationParser] kartoteka JSON parse failed', error.message);
-    return null;
+    return parseKartotekaText(html, unp);
   }
   const key = Object.keys(data).find((k) => k.startsWith('unp-general-info-'));
   const info = data[key] ?? data['last-unp'];
-  if (!info || !info.egr) return null;
+  if (!info || !info.egr) return parseKartotekaText(html, unp);
 
   const egr = info.egr;
   const fullName = egr.full_name || egr.fio || '';
@@ -159,7 +213,7 @@ function parseKartoteka(html, unp) {
     activity,
   });
 
-  if (!fullName && !legalAddress) return null;
+  if (!fullName && !legalAddress) return parseKartotekaText(html, unp);
   return {
     unp,
     fullName,
@@ -196,10 +250,13 @@ async function fetchKartoteka(unp, fetchImpl) {
   console.log('[organizationParser] fetching', url);
   const html = await fetchText(url, fetchImpl);
   logHtml('kartoteka html', html);
-  const containsUnp = html && html.includes(unp);
-  console.log('[organizationParser]', url, { ok: Boolean(html), containsUnp });
-  if (!html || !containsUnp) return null;
-  return parseKartoteka(html, unp);
+  if (!html) {
+    console.log('[organizationParser]', url, { ok: false });
+    return null;
+  }
+  const result = parseKartoteka(html, unp);
+  console.log('[organizationParser]', url, { ok: Boolean(result) });
+  return result;
 }
 
 export async function fetchOrganizationByUnp(unp, options = {}) {

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import JSZip from 'jszip';
 import { parseDateToFormat, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { resolveDisposalMethod } from '../disposalResolver.js';
-import { addWasteToReference, findWasteInReference, getWasteFromReference, getMissingFields, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference } from '../wasteReference.js';
+import { addWasteToReference, DEFAULT_REFERENCE_PATH, findWasteInReference, getWasteFromReference, getMissingFields, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference } from '../wasteReference.js';
 import { buildOrganizationData, fetchOrganizationByUnp } from '../organizationParser.js';
 import { readDocsSnapshot, writeDocsSnapshot, readWasteClassifierText, findHazardClassByCode, extractWasteNameFromClassifierEntry, classifierEntriesForCode } from './code112.js';
 
@@ -95,6 +95,7 @@ function ensureGeneratorState(project, now) {
     state.conditionalBlocks = state.conditionalBlocks ?? {};
     state.statement = state.statement ?? { extraDocs: [] };
     state.files = state.files ?? {};
+    state.referencePath = state.referencePath ?? DEFAULT_REFERENCE_PATH;
     return state;
   }
   project.extractedData.code111 = {
@@ -109,6 +110,7 @@ function ensureGeneratorState(project, now) {
     conditionalBlocks: {},
     statement: { extraDocs: [] },
     files: {},
+    referencePath: DEFAULT_REFERENCE_PATH,
   };
   return project.extractedData.code111;
 }
@@ -1012,12 +1014,20 @@ function getVariableDisplay(state, variable) {
   if (variable === 'positions') {
     const positions = Array.isArray(state.positions) ? state.positions : [];
     if (!positions.length) return '_нет данных_';
-    return positions.map((p) => `- [должность]: ${p}`).join('\n');
+    const lines = ['| Должностное лицо | Перечень обязанностей |', '|---|---|'];
+    for (const p of positions) {
+      lines.push(`| ${p} | [перечень обязанностей] |`);
+    }
+    return lines.join('\n');
   }
   if (variable === 'wastes') {
     const wastes = Array.isArray(state.wastes) ? state.wastes : [];
     if (!wastes.length) return '_нет данных_';
-    return wastes.map((w) => `- ${w.code} — ${w.name || w.wasteName || '—'} (класс: ${w.hazardClass || '—'}, физ. состояние: ${w.physicalState || 'твердые'})`).join('\n');
+    const lines = ['| Код | Наименование | Класс | Физ. состояние | Источник | Плотность | Способ обращения |', '|---|---|---|---|---|---|---|'];
+    for (const w of wastes) {
+      lines.push(`| ${w.code || '—'} | ${w.name || w.wasteName || '—'} | ${w.hazardClass || '—'} | ${w.physicalState || 'твердые'} | ${w.source || '—'} | ${w.density || '—'} | ${w.handling || w.definition || '—'} |`);
+    }
+    return lines.join('\n');
   }
   if (variable === 'statement.extraDocs') {
     const docs = Array.isArray(state.statement?.extraDocs) ? state.statement.extraDocs : [];
@@ -1048,6 +1058,35 @@ const FIELD_LABELS = {
   'conditionalBlocks': 'Лицензии / экспертиза',
 };
 
+function buildInstructionPageContent(state) {
+  const d = state.data || {};
+  const year = d.год || new Date().getFullYear();
+  const place = d.Место || '[место]';
+  const title = d.название_инструкции || 'Инструкция по обращению с отходами производства';
+  const lines = [
+    '# Титульный лист',
+    '',
+    'Согласовано:',
+    '',
+    `Начальник ${d.нач_органа || '[нач_органа]'}`,
+    `${d.орган || '[орган]'}`,
+    `_____________ ${d.фио_нач_органа || '[ФИО]'}`,
+    '',
+    'Утверждаю:',
+    '',
+    `${d.должность_руководителя || '[должность_руководителя]'}`,
+    `${d.название_организации || '[название_организации]'}`,
+    `_____________ ${d.ФИО_руководителя || '[ФИО_руководителя]'}`,
+    '',
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    `г. ${place} — ${year} г.`,
+  ];
+  return lines.join('\n');
+}
+
 function buildSectionContent(section, state) {
   const lines = [`# ${section.label}`];
   if (!section.variables.length) {
@@ -1075,11 +1114,16 @@ export async function syncCode111ProjectPages(project, state, docsPath, now, { a
   for (const doc of code111Documents) {
     const pageId = `agent-${project.id}-code111-${doc.key}`;
     const existing = snapshot.pages.find((p) => p.id === pageId);
-    if (!existing) {
+    const content = doc.key === 'instruction' ? buildInstructionPageContent(state) : `# ${doc.label}\n\nДанные заполняются через Цэпика.`;
+    if (existing) {
+      existing.title = doc.label;
+      existing.content = content;
+      existing.updatedAt = now;
+    } else {
       snapshot.pages.push({
         id: pageId,
         title: doc.label,
-        content: `# ${doc.label}\n\nДанные заполняются через Цэпика.`,
+        content,
         parentId: workFolderId,
         order: code111Documents.indexOf(doc),
         createdAt: now,
@@ -1185,12 +1229,13 @@ export async function generate(project, userSources = {}) {
   const now = userSources.now ?? Date.now();
   const state = ensureGeneratorState(project, now);
   const answer = typeof userSources.answer === 'string' ? userSources.answer.trim() : '';
+  const answerLabel = typeof userSources.answerLabel === 'string' ? userSources.answerLabel : answer;
   const outputDir = userSources.outputDir ?? DEFAULT_OUTPUT_DIR;
   const docsPath = userSources.docsPath ?? DEFAULT_DOCS_PATH;
   const context = { outputDir, docsPath, fetchImpl: userSources.fetchImpl, referenceTexts: userSources.referenceTexts };
   if (userSources.referencePath) state.referencePath = userSources.referencePath;
 
-  if (answer) addUserMessage(project, answer, now);
+  if (answer) addUserMessage(project, answerLabel, now);
   state.updatedAt = now;
 
   if (answer && isForceReferenceCommand(answer)) {

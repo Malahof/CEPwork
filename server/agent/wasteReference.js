@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readDocsSnapshot, writeDocsSnapshot } from './generators/code112.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const DEFAULT_REFERENCE_PATH = path.join(PROJECT_ROOT, 'data', 'references', 'waste_reference.json');
+export const DEFAULT_REFERENCE_PATH = path.join(PROJECT_ROOT, 'data', 'references', 'waste_reference.json');
 
 export const WASTE_REFERENCE_FOLDER_ID = 'references';
 export const WASTE_REFERENCE_PAGE_ID = 'waste-reference';
@@ -38,6 +38,7 @@ export async function loadWasteReference(referencePath = DEFAULT_REFERENCE_PATH)
     }
     cache = [];
   }
+  console.log('[wasteReference] Загружено', cache.length, 'записей из', referencePath);
   cachePath = referencePath;
   return cache;
 }

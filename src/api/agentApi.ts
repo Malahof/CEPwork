@@ -12,13 +12,13 @@ export async function startAgentProject(): Promise<AgentProject> {
   return parseAgentResponse(response, 'Не удалось начать проект Цэпика');
 }
 
-export async function selectAgentAnswer(projectId: string, answer: string): Promise<AgentProject> {
+export async function selectAgentAnswer(projectId: string, answer: string, answerLabel?: string): Promise<AgentProject> {
   const response = await fetch('/api/agent/select', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ projectId, answer }),
+    body: JSON.stringify({ projectId, answer, answerLabel }),
   });
   return parseAgentResponse(response, 'Не удалось обработать ответ Цэпика');
 }

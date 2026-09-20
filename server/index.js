@@ -500,7 +500,7 @@ app.post('/api/agent/select', async (req, res, next) => {
         error.statusCode = 410;
         throw error;
       }
-      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, docsPath, memoryPath: userMemoryPath });
+      return selectAgentAnswer(found, answer, Date.now(), { outputDir: agentOutputDir, docsPath, memoryPath: userMemoryPath, answerLabel: body.answerLabel });
     });
 
     res.json(serializeAgentProject(project));

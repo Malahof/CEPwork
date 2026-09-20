@@ -361,6 +361,7 @@ function extractOrganizationNameFromText(text) {
 }
 
 export async function selectAgentAnswer(project, answer, now = Date.now(), context = {}) {
+  const answerLabel = context.answerLabel || answer;
   const normalizedAnswer = answer.trim();
   const memoryCommandResult = await handleMemoryCommand(project, normalizedAnswer, now, context.memoryPath);
   if (memoryCommandResult) return memoryCommandResult;
@@ -384,13 +385,13 @@ export async function selectAgentAnswer(project, answer, now = Date.now(), conte
 
     if (project.packageCode === '112') {
       const memory = context.memoryPath ? await readUserMemory(context.memoryPath) : null;
-      return generateCode112(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
+      return generateCode112(project, { answer: normalizedAnswer, answerLabel, now, outputDir: context.outputDir, docsPath: context.docsPath, memory });
     }
     if (project.packageCode === '111') {
-      return generateCode111(project, { answer: normalizedAnswer, now, outputDir: context.outputDir, docsPath: context.docsPath });
+      return generateCode111(project, { answer: normalizedAnswer, answerLabel, now, outputDir: context.outputDir, docsPath: context.docsPath });
     }
 
-    addUserMessage(project, normalizedAnswer, now);
+    addUserMessage(project, answerLabel, now);
     if (isPackageCode(normalizedAnswer) && !hasPackageGenerator(normalizedAnswer)) {
       logUnsupportedPackage(project, normalizedAnswer);
       addAgentMessage(project, unsupportedDocumentationMessage, now);

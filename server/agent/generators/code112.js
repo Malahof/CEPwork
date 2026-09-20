@@ -7,7 +7,7 @@ import { buildMemorySystemPrompt, findOrganization, readUserMemory } from '../me
 import { defaultDocsSnapshot, ensureDefaultDocsStructure } from '../../defaultDocs.js';
 import { parseDateToFormat, processRepeatingBlocks, replaceDocxPlaceholders, replaceXmlPlaceholders } from '../../utils/docxHelpers.js';
 import { refreshDisposalReferences, resolveDisposalMethod } from '../disposalResolver.js';
-import { addWasteToReference, findWasteInReference, getMissingFields, getWasteFromReference, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference, upsertWasteReference } from '../wasteReference.js';
+import { addWasteToReference, DEFAULT_REFERENCE_PATH, findWasteInReference, getMissingFields, getWasteFromReference, isForceReferenceCommand, isWasteInReference, loadWasteReference, markWasteAsIgnored, syncWasteFromState, syncWasteReferencePage, upsertWasteInReference, upsertWasteReference } from '../wasteReference.js';
 import {
   WASTE_EXTRACTION_MODES,
   extractWasteDataFromText,
@@ -88,6 +88,7 @@ export async function generate(projectData, userSources = {}) {
   const now = userSources.now ?? Date.now();
   const state = ensureGeneratorState(projectData, now);
   const answer = typeof userSources.answer === 'string' ? userSources.answer.trim() : '';
+  const answerLabel = typeof userSources.answerLabel === 'string' ? userSources.answerLabel : answer;
   const outputDir = userSources.outputDir ?? DEFAULT_OUTPUT_DIR;
   const docsPath = userSources.docsPath ?? process.env.DOCS_DATA_PATH ?? DEFAULT_DOCS_PATH;
   const memory = await resolveCode112Memory(userSources);
@@ -140,7 +141,7 @@ export async function generate(projectData, userSources = {}) {
     return projectData;
   }
 
-  addUserMessage(projectData, answer, now);
+  addUserMessage(projectData, answerLabel, now);
 
   if (state.awaitingOrganizationName) {
     if (isStopAnswer(answer)) {
@@ -3047,6 +3048,7 @@ function ensureGeneratorState(project, now) {
     ? project.extractedData.code112.extractedWasteList.map(normalizeWasteRow).filter((waste) => waste.code)
     : [];
   
+  project.extractedData.code112.referencePath = project.extractedData.code112.referencePath ?? DEFAULT_REFERENCE_PATH;
   console.log('[code112] State ensured, organization name:', project.extractedData.code112.data.Название_организации, 'startedAt:', project.extractedData.code112.startedAt);
   return project.extractedData.code112;
 }
