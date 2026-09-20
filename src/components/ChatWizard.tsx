@@ -35,10 +35,21 @@ const OPTION_LABELS: Record<string, string> = {
   continue: 'Продолжить',
   finish: 'Завершить',
   add: 'Добавить',
+  instruction: 'Инструкция по обращению с отходами',
+  application: 'Заявление на согласование',
+  extractAllWasteData: 'Все данные (коды, наименования, нормативы, годовое количество)',
 };
 
 function getOptionLabel(option: { key: string; label: string }) {
   return OPTION_LABELS[option.key] ?? option.label ?? option.key;
+}
+
+function safeMessageText(text: string) {
+  const techErrorPattern = /is not defined|Cannot read|TypeError|ReferenceError|SyntaxError|ENOENT|EPERM|undefined is not|is not a function|invalid snapshot/i;
+  if (techErrorPattern.test(text)) {
+    return 'Произошла ошибка при обработке. Попробуйте ещё раз или обратитесь к администратору.';
+  }
+  return text;
 }
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -59,14 +70,15 @@ interface ChatWizardProps {
 }
 
 function renderMessageText(text: string) {
+  const safeText = safeMessageText(text);
   const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
   const parts: ReactNode[] = [];
   let lastIndex = 0;
-  let match = linkPattern.exec(text);
+  let match = linkPattern.exec(safeText);
 
   while (match) {
     const [fullMatch, label, href] = match;
-    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    if (match.index > lastIndex) parts.push(safeText.slice(lastIndex, match.index));
     parts.push(
       <a
         href={href}
@@ -78,11 +90,11 @@ function renderMessageText(text: string) {
       </a>
     );
     lastIndex = match.index + fullMatch.length;
-    match = linkPattern.exec(text);
+    match = linkPattern.exec(safeText);
   }
 
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-  return parts.length ? parts : text;
+  if (lastIndex < safeText.length) parts.push(safeText.slice(lastIndex));
+  return parts.length ? parts : safeText;
 }
 
 export function ChatWizard({ onGenerationStart }: ChatWizardProps) {

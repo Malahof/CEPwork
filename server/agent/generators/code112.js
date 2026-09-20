@@ -2168,8 +2168,14 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     waste.composition = 'Сложнокомпонентный состав';
     waste.compositionPercent = '−';
     waste.compositionComponents = [];
-    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: 'Сложнокомпонентный состав', compositionPercent: '−', density: waste.density || '' }, state.referencePath);
-    console.log('[wasteReference] Отход', waste.code, 'состав и состав % сохранены в справочник');
+    console.log('[code112] Сохранение состава в справочник для отхода', waste.code);
+    try {
+      await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: 'Сложнокомпонентный состав', compositionPercent: '−', density: waste.density || '' }, state.referencePath);
+      await syncWasteReferencePage(docsPath, state.referencePath);
+      console.log('[code112] Состав и состав % для отхода', waste.code, 'сохранены в справочник');
+    } catch (error) {
+      console.error('[code112] Ошибка сохранения в справочник:', error);
+    }
   } else {
     const components = parseCompositionInput(answer);
     if (!components) {
@@ -2187,8 +2193,14 @@ async function handleWasteFormationCompositionInput(project, state, answer, docs
     const entry = { code: waste.code, name: waste.name, components };
     if (idx >= 0) ref[idx] = entry; else ref.push(entry);
     await saveCompositionReference(ref);
-    await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: refComposition, compositionPercent: refCompositionPercent, density: waste.density || '' }, state.referencePath);
-    console.log('[wasteReference] Отход', waste.code, 'состав и состав % сохранены в справочник');
+    console.log('[code112] Сохранение состава в справочник для отхода', waste.code);
+    try {
+      await upsertWasteInReference({ code: waste.code, name: waste.name, source: waste.source || '', composition: refComposition, compositionPercent: refCompositionPercent, density: waste.density || '' }, state.referencePath);
+      await syncWasteReferencePage(docsPath, state.referencePath);
+      console.log('[code112] Состав и состав % для отхода', waste.code, 'сохранены в справочник');
+    } catch (error) {
+      console.error('[code112] Ошибка сохранения в справочник:', error);
+    }
   }
 
   comp.index++;
@@ -3417,10 +3429,7 @@ function buildSourceQuantityQuestion(state) {
   const code = queue[index];
   const waste = state.wastes.find((w) => w.code === code);
   if (!waste) return 'Укажите количество образующихся отходов в кг (или шт.) для каждого источника.';
-  const current = isFilledTemplateValue(waste.quantityKg) && !isDashQuantity(waste.quantityKg)
-    ? `текущее: ${waste.quantityKg}`
-    : 'текущее: −';
-  return `Для отхода ${waste.code} (${waste.name}), источник «${waste.sourceName || '—'}», укажите количество образующихся отходов (кг или шт.). ${current}. Пример: 70 или 150 шт. Введите −, чтобы оставить без значения.`;
+  return `Для отхода ${waste.code} (${waste.name}) укажите количество образующихся отходов (кг или шт.). Пример: 0,054 т или 12 шт. Можно сразу ввести список: 9120400: 0,054; 1140202: 1,2.`;
 }
 
 function parseSourceQuantityList(text) {
